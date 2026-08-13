@@ -1,0 +1,9 @@
+// Copy this file to local.h (gitignored) and fill in real values.
+
+#pragma once
+
+#define WIFI_SSID     "PicoNet"
+#define WIFI_PASSWORD "yonoquierovolar"
+
+// %lu is replaced with the received packet's sequence number.
+#define REPORT_URL_TEMPLATE "http://192.168.1.12/heartbeat.txt?from=lora-receiver-test&seqno=%lu"
