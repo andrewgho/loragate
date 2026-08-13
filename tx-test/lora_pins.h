@@ -30,8 +30,10 @@
 #define LORA_BUSY  21  // D3
 #define LORA_NSS   22  // D4
 #define LORA_RFSW  23  // D5 — RF switch /CTRL; drive HIGH once at boot and
-                       // leave it (DIO2, handled internally by the SX1262/
-                       // RadioLib, does the actual TX/RX switching)
+                       // leave it. DIO2 (not host-controlled) does the
+                       // actual TX/RX switching, but only once enabled via
+                       // radio.setDio2AsRfSwitch(true) in setup() — the
+                       // SX1262 doesn't route DIO2 to the switch by default.
 #define LORA_SCK   19  // D8
 #define LORA_MISO  20  // D9
 #define LORA_MOSI  18  // D10

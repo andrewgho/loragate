@@ -79,6 +79,15 @@ void setup() {
   }
   Serial.println("radio init OK");
 
+  // The antenna switch is steered by DIO2, but the SX1262 doesn't route
+  // DIO2 to the switch automatically out of reset — without this call,
+  // transmit()/startReceive() report success but the switch never moves,
+  // so nothing actually gets to the antenna.
+  state = radio.setDio2AsRfSwitch(true);
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("setDio2AsRfSwitch failed: %d\n", state);
+  }
+
   wifi_connect();
 
   radio.setDio1Action(set_rx_flag);
