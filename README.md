@@ -21,22 +21,19 @@ knows about door events, client time, or battery voltage yet — that's phase
   enclosure with cable glands (outdoor)
 - Receiver: USB power, indoors, always on, WiFi-connected
 
-### LoRa pin mapping — unverified, read before flashing
+### LoRa pin mapping
 
 Seeed doesn't sell or document a Wio-SX1262 + XIAO ESP32C6 pairing (only
-ESP32S3 and nRF52840 are official). The pin mapping in `tx-test/lora_pins.h`
-and `rx-test/lora_pins.h` (kept identical in both) is *derived* from Seeed's
-own schematics — the Wio-SX1262 module's header pinout and the plain XIAO
-ESP32-C6's edge pinout, cross-checked by confirming the power pins (VIN/GND/
-3V3) land in the same header positions on both boards — not confirmed by
-testing on real hardware. Full derivation and reasoning is in the comment
-block at the top of `lora_pins.h`.
-
-If `radio.begin()` fails (both sketches print this clearly and halt/sleep
-rather than silently continuing), that's the pin mapping to re-check first —
-ideally with a continuity tester against the schematics, since a wrong BUSY
-or DIO1 pin can also leave the radio *looking* initialized while never
-actually working.
+ESP32S3 and nRF52840 are official), so there's no vendor pinout for this
+combination. The pin mapping in `tx-test/lora_pins.h` and `rx-test/lora_pins.h`
+(kept identical in both) is confirmed against the physical boards' own
+silkscreen — the pin labels printed next to the through-hole headers on each
+board — see the comment block at the top of `lora_pins.h` for the table.
+An earlier schematic-derived guess (before the boards were in hand to read)
+was off by one header position on the control-line side and got
+`RADIOLIB_ERR_CHIP_NOT_FOUND` (-2) from `radio.begin()`; that's why the file
+credits the silkscreen over the schematic if they're ever next revised and
+disagree again.
 
 ## Toolchain setup
 

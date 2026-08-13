@@ -1,38 +1,35 @@
 // Pin mapping from the XIAO ESP32-C6 to the Wio-SX1262 expansion board.
 //
-// Seeed only officially sells the Wio-SX1262 paired with the XIAO ESP32S3
-// (through-hole pin header variant, which is what we have) or the XIAO
-// nRF52840; there is no official ESP32C6 pairing, so this mapping is
-// DERIVED, not vendor-confirmed or empirically tested yet:
+// Confirmed against the physical boards' own silkscreen (printed pin labels
+// on each side of the through-hole headers, read directly off the hardware):
 //
-//   1. Seeed's schematic for the module ("Schematic_Diagram_Wio-SX1262_for_
-//      XIAO.pdf") shows its two 1x7 2.54mm headers wired to the SX1262 as:
-//        J1 pin 1..5: LORA_DIO1, LORA_BUSY, LORA_RST, LORA_SPI_NSS, LORA_RF_SW1
-//        J2 pin 1..6: VIN, GND, +3V3, LORA_SPI_MOSI, LORA_SPI_MISO, LORA_SPI_SCK
-//   2. Seeed's schematic for the plain XIAO ESP32-C6 module shows its two
-//      7-pin edges as:
-//        side A pin 1..7: D0, D1, D2, D3, D4, D5, D6
-//        side B pin 1..7: VBUS, GND, 3V3, D10, D9, D8, D7
-//      J2's VIN/GND/+3V3 in positions 1-3 line up exactly with the C6's
-//      VBUS/GND/3V3 in the same positions on side B — strong confirmation
-//      the two headers mate position-for-position, unmirrored. That gives
-//      SCK/MISO/MOSI on D8/D9/D10 (the pins already silkscreened SCK/MISO/
-//      MOSI on every XIAO board) and the control lines on D0-D4 below.
+//   C6 pin   Wio-SX1262 pin
+//   VBUS     VIN
+//   GND      GND
+//   3V3      3V3
+//   D10      MOSI
+//   D9       MISO
+//   D8       SCK
+//   D7       D7    (passthrough, unused)
+//   D0       D0    (passthrough, unused)
+//   D1       DIO1
+//   D2       RST
+//   D3       BUSY
+//   D4       NSS
+//   D5       RF_SW
+//   D6       D6    (passthrough, unused)
 //
-// A community project pairing a C6 with this same module separately reports
-// RST on D2 (matches what's derived here) but NSS on D5 (conflicts with the
-// D3 derived here) — so treat NSS/BUSY/DIO1 as the least certain of the
-// bunch. If the radio never reports a successful begin(), that's the first
-// thing to re-check (bare board, continuity-test J1 against the C6
-// castellations with a multimeter).
+// This superseded an earlier schematic-derived guess that was off by one
+// header position on the control-line side (D0-D5 instead of D1-D6) — that
+// guess got RADIOLIB_ERR_CHIP_NOT_FOUND (-2) from radio.begin().
 
 #pragma once
 
-#define LORA_DIO1  0   // D0
-#define LORA_BUSY  1   // D1
+#define LORA_DIO1  1   // D1
 #define LORA_RST   2   // D2
-#define LORA_NSS   21  // D3
-#define LORA_RFSW  22  // D4 — RF switch /CTRL; drive HIGH once at boot and
+#define LORA_BUSY  21  // D3
+#define LORA_NSS   22  // D4
+#define LORA_RFSW  23  // D5 — RF switch /CTRL; drive HIGH once at boot and
                        // leave it (DIO2, handled internally by the SX1262/
                        // RadioLib, does the actual TX/RX switching)
 #define LORA_SCK   19  // D8
