@@ -17,4 +17,6 @@ enum LoraPacketType : uint8_t {
 struct __attribute__((packed)) LoraPacket {
   uint8_t  type;
   uint32_t seq;
+  uint8_t  txno;  // PKT_DATA_TEST only: which transmit attempt this is
+                  // (0 = first try, 1 = first retry, ...). Unused/0 on acks.
 };

@@ -104,12 +104,12 @@ void setup() {
   }
 
   uint32_t seq = next_seq++;
-  LoraPacket pkt = { PKT_DATA_TEST, seq };
 
   bool acked = false;
   uint32_t backoff_ms = INITIAL_BACKOFF_MS;
   for (int attempt = 0; attempt <= MAX_RETRIES && !acked; attempt++) {
     Serial.printf("TX seq=%lu attempt=%d/%d\n", (unsigned long)seq, attempt, MAX_RETRIES);
+    LoraPacket pkt = { PKT_DATA_TEST, seq, (uint8_t)attempt };
     int st = radio.transmit((uint8_t *)&pkt, sizeof(pkt));
     if (st != RADIOLIB_ERR_NONE) {
       Serial.printf("transmit failed: %d\n", st);

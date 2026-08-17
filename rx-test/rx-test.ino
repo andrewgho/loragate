@@ -14,6 +14,10 @@
 
 #define WIFI_TIMEOUT_MS 10000
 
+// 0-100: % chance of silently withholding an ack, to exercise tx-test's
+// retry/backoff without needing real radio interference. 0 = never drop.
+#define ACK_DROP_PCT 0
+
 #ifdef DEBUG
   #define LOG(fmt, ...) Serial.printf("[DBG] " fmt "\n", ##__VA_ARGS__)
 #else
@@ -38,7 +42,7 @@ void wifi_connect() {
   }
 }
 
-void report_to_server(uint32_t seq) {
+void report_to_server(uint32_t seq, uint8_t txno, float rssi, float snr) {
   wifi_connect();
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi: not connected; skipping report");
@@ -46,7 +50,8 @@ void report_to_server(uint32_t seq) {
   }
 
   char url[256];
-  snprintf(url, sizeof(url), REPORT_URL_TEMPLATE, (unsigned long)seq);
+  snprintf(url, sizeof(url), REPORT_URL_TEMPLATE,
+           (unsigned long)seq, (unsigned)txno, rssi, snr);
   Serial.printf("GET %s\n", url);
 
   HTTPClient http;
@@ -118,15 +123,21 @@ void loop() {
     return;
   }
 
-  Serial.printf("RX seq=%lu rssi=%.1fdBm snr=%.1fdB\n",
-                (unsigned long)pkt.seq, radio.getRSSI(), radio.getSNR());
+  float rssi = radio.getRSSI();
+  float snr = radio.getSNR();
+  Serial.printf("RX seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
+                (unsigned long)pkt.seq, pkt.txno, rssi, snr);
 
-  LoraPacket ack = { PKT_ACK, pkt.seq };
-  int tx_st = radio.transmit((uint8_t *)&ack, sizeof(ack));
-  if (tx_st != RADIOLIB_ERR_NONE) {
-    Serial.printf("ack transmit failed: %d\n", tx_st);
+  if (ACK_DROP_PCT > 0 && (int)random(100) < ACK_DROP_PCT) {
+    Serial.println("ack drop (test): withholding ack");
+  } else {
+    LoraPacket ack = { PKT_ACK, pkt.seq, 0 };
+    int tx_st = radio.transmit((uint8_t *)&ack, sizeof(ack));
+    if (tx_st != RADIOLIB_ERR_NONE) {
+      Serial.printf("ack transmit failed: %d\n", tx_st);
+    }
+    radio.startReceive();  // transmit() leaves the radio in standby
   }
-  radio.startReceive();  // transmit() leaves the radio in standby
 
-  report_to_server(pkt.seq);
+  report_to_server(pkt.seq, pkt.txno, rssi, snr);
 }

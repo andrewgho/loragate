@@ -68,17 +68,27 @@ and the report URL template — copy `local.h.example` and fill it in:
 ```c
 #define WIFI_SSID     "..."
 #define WIFI_PASSWORD "..."
-#define REPORT_URL_TEMPLATE "http://192.168.1.12/heartbeat.txt?from=lora-receiver-test&seqno=%lu"
+#define REPORT_URL_TEMPLATE "http://192.168.1.12/heartbeat.txt?from=lora-receiver-test&seqno=%lu&txno=%u&rssi=%.1f&snr=%.1f"
 ```
+
+If you already have a `local.h` from before, it needs updating too — the
+template now takes four placeholders, not one (see order below).
 
 ## Link-layer protocol (phase 1)
 
-5-byte packet: `uint8_t type` (`1` = data, `2` = ack) + `uint32_t seq`.
-Transmitter sends, waits up to 1.5 s for a matching ack, retries up to 5
-times with backoff (250 ms doubling to a 4 s cap), then deep sleeps 10 s
-either way. Receiver acks every data packet it gets and reports the sequence
-number to the server. See `lora_packet.h` (duplicated identically in both
+6-byte packet: `uint8_t type` (`1` = data, `2` = ack) + `uint32_t seq` +
+`uint8_t txno` (which transmit attempt this is — `0` = first try, `1` = first
+retry, etc.; meaningful on data packets, unused/`0` on acks). Transmitter
+sends, waits up to 1.5 s for a matching ack, retries up to 5 times with
+backoff (250 ms doubling to a 4 s cap), then deep sleeps 10 s either way.
+Receiver acks every data packet it gets and reports seq, txno, and the
+packet's RSSI/SNR to the server (query params in that order — `seqno`,
+`txno`, `rssi`, `snr`). See `lora_packet.h` (duplicated identically in both
 sketch directories — Arduino sketches can't share files across directories).
+
+`rx-test/rx-test.ino` has an `ACK_DROP_PCT` knob (0 by default) — set it to
+exercise the transmitter's retry/backoff path without needing real radio
+interference; the receiver logs "ack drop (test)" whenever it withholds one.
 
 ## Planned protocol (phase 2, not yet implemented)
 
