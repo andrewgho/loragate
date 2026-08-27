@@ -36,20 +36,19 @@ boards' silkscreen — see `lora_pins.h`), leaving D0, D6, D7 free.
 
 ## Mounting the stack
 
-The XIAO ESP32-C6 + Wio-SX1262 stack mounts on a small (~9x9 hole) protoboard:
-female pin headers soldered onto the protoboard as a socket, with the Wio
-module (the bottom half of the stack, its male header pins facing down)
-plugging into that socket. Once seated, all 14 XIAO signals (D0-D10, 3V3,
-GND, VBUS) are available as ordinary through-hole solder points on the
-protoboard's underside — standard female header strips have their pins
-protrude slightly on the solder side — which is where the reed switch leads,
-the D0 pull-up, and the LDO's regulated output all land.
-
-The two 7-pin socket rows likely eat most of a 9x9 board on their own, so
-the LDO/adapter, its bypass caps, the pull-up resistor, and the JST-PH pair
-will probably need their own space — a second small board, or point-to-point
-off-board — rather than fitting alongside the socket. Worth planning the
-physical layout before committing to a single 9x9 for everything.
+The XIAO ESP32-C6 + Wio-SX1262 stack mounts on an
+[Adafruit Perma-Proto Quarter-sized breadboard PCB](https://www.digikey.com/en/products/detail/adafruit-industries-llc/1608/5154676)
+(1.7" x 2.0", breadboard-style bus strips rather than isolated pads — chosen
+over a bare 9x9-hole protoboard specifically for the room to fit the LDO
+adapter, resistor, caps, and JST-PH pads alongside the stack's socket rather
+than needing a second board): female pin headers soldered onto the
+protoboard as a socket, with the Wio module (the bottom half of the stack,
+its male header pins facing down) plugging into that socket. Once seated,
+all 14 XIAO signals (D0-D10, 3V3, GND, VBUS) are available as ordinary
+through-hole solder points on the protoboard's underside — standard female
+header strips have their pins protrude slightly on the solder side — which
+is where the reed switch leads, the D0 pull-up, and the LDO's regulated
+output all land.
 
 ### Why the reed switch is on D0, not an arbitrary free pin
 
@@ -131,7 +130,13 @@ designed to be recharged.
 [TI TPS7A02](https://www.ti.com/lit/ds/symlink/tps7a02.pdf), 3.3V fixed
 output (part suffix `33`), SOT23-5 package (`DBV`) — 25nA quiescent current
 even in dropout, 1.5-6.0V input range, 270mV max dropout at a full 200mA
-load (far less at our currents). Going to 3 cells instead of 2 puts the
+load (far less at our currents). Ordering as
+[TPS7A0233PDBVR](https://www.digikey.com/en/products/detail/texas-instruments/TPS7A0233PDBVR/12165099)
+— the `P` before the package code is TI's convention for "built at a newer
+assembly/test site," not a spec or pinout difference (confirmed against TI's
+own explanation of the same convention on a different part family);
+`TPS7A0233DBVR` without the `P` is the same device and works identically.
+Going to 3 cells instead of 2 puts the
 fresh-pack voltage (~5.1-5.4V) safely under the LDO's 6.0V input ceiling
 with room to spare, and keeps the LDO in regulation through nearly the
 entire discharge curve rather than just clipping the fresh-cell peak. This
@@ -142,7 +147,7 @@ is unaffected by adding a third cell in series.
 
 No one sells a ready-made breakout for this (or any other nanopower-tier
 LDO) — it's an SMD-chip-only market segment. The practical build path is a
-**bare TPS7A0233DBVR chip hand-soldered onto a SOT23-5-to-DIP adapter
+**bare TPS7A0233PDBVR chip hand-soldered onto a SOT23-5-to-DIP adapter
 board** — this needs no reflow or hot air, just a fine-tip iron, same as any
 other through-hole work, and turns the bare chip into a
 breadboard/protoboard-compatible DIP-pitch part.
@@ -239,12 +244,12 @@ pinout right and hold up fine:
 |---|---|---|
 | XIAO ESP32-C6 | 1 | already have |
 | Wio-SX1262 (for XIAO ESP32S3, through-hole variant) | 1 | already have |
-| ~9x9 hole protoboard | 1 | mounts the stack — see "Mounting the stack"; may need a second small board for the power components |
+| Adafruit Perma-Proto Quarter-sized breadboard PCB | 1 | mounts the whole build — see "Mounting the stack" |
 | 2x7 female pin headers, 2.54mm pitch | 1 pair | socket for the stack, soldered to the protoboard |
 | Interlogix 1085W-N or Honeywell 7945WH reed switch | 1 | potted, 1.5" gap |
 | 3x AA Energizer Ultimate Lithium (L91) | 1 pack | ~3,000mAh nominal, ~1.0-1.8V/cell across life |
 | 3x AA battery holder (inline or triangular) | 1 | less common than 2x/4x but easy to source |
-| TPS7A0233DBVR (TI, SOT23-5, 3.3V fixed LDO) | 1 | bare chip — see "Power" |
+| TPS7A0233PDBVR (TI, SOT23-5, 3.3V fixed LDO) | 1 | bare chip — see "Power" |
 | Proto Advantage / Chip Quik PA0086C SOT23-5-to-DIP-6 adapter | 1 | confirmed 0.1" pitch, pins pre-installed — see "Power" |
 | 1µF ceramic capacitor | 2 | TPS7A02 IN and OUT bypass |
 | JST-PH 2.0mm 2-pin connector pair | 1 | battery disconnect for USB safety |
