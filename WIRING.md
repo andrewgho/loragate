@@ -142,11 +142,23 @@ is unaffected by adding a third cell in series.
 
 No one sells a ready-made breakout for this (or any other nanopower-tier
 LDO) — it's an SMD-chip-only market segment. The practical build path is a
-**bare TPS7A0233DBVR chip hand-soldered onto a generic SOT23-5-to-DIP
-adapter board** (SparkFun, Schmartboard, SchmalzTech, and generic multi-packs
-on Amazon/eBay all sell these for a couple dollars) — this needs no reflow
-or hot air, just a fine-tip iron, same as any other through-hole work, and
-turns the bare chip into a breadboard/protoboard-compatible DIP-pitch part.
+**bare TPS7A0233DBVR chip hand-soldered onto a SOT23-5-to-DIP adapter
+board** — this needs no reflow or hot air, just a fine-tip iron, same as any
+other through-hole work, and turns the bare chip into a
+breadboard/protoboard-compatible DIP-pitch part.
+
+Confirmed part: **Proto Advantage / Chip Quik PA0086C** ("SOT23-5 to DIP-6
+SMT Adapter, 0.95mm pitch, Compact Series"; [DigiKey PA0086C](https://www.digikey.com/en/products/detail/chip-quik-inc/PA0086C/12352102))
+— checked against its datasheet:
+0.100" pin pitch and 0.300" row spacing (standard DIP-6/breadboard grid,
+drops straight into any 0.1"-grid protoboard), DIP pins factory-installed
+(gold-plated, 0.46mm diameter — thinner than a typical resistor lead, so no
+tight fit going through protoboard holes). Nothing to add beyond the bare
+chip itself; solder its 5 leads onto the adapter's top-side SMT pads and the
+bottom-side DIP pins are ready to go straight into the protoboard.
+Equivalent adapters from SparkFun/Schmartboard/SchmalzTech/generic
+multi-packs should work the same way — just confirm 0.1" pin pitch before
+buying, since some cheap SMD-to-DIP adapters use denser/nonstandard spacing.
 
 Wiring (by pin *function* — the adapter board's own physical pad layout and
 labeling varies by vendor, so match against whichever one is on hand rather
@@ -233,7 +245,7 @@ pinout right and hold up fine:
 | 3x AA Energizer Ultimate Lithium (L91) | 1 pack | ~3,000mAh nominal, ~1.0-1.8V/cell across life |
 | 3x AA battery holder (inline or triangular) | 1 | less common than 2x/4x but easy to source |
 | TPS7A0233DBVR (TI, SOT23-5, 3.3V fixed LDO) | 1 | bare chip — see "Power" |
-| SOT23-5-to-DIP adapter board | 1 | SparkFun/Schmartboard/SchmalzTech/generic — see "Power" |
+| Proto Advantage / Chip Quik PA0086C SOT23-5-to-DIP-6 adapter | 1 | confirmed 0.1" pitch, pins pre-installed — see "Power" |
 | 1µF ceramic capacitor | 2 | TPS7A02 IN and OUT bypass |
 | JST-PH 2.0mm 2-pin connector pair | 1 | battery disconnect for USB safety |
 | 1MΩ resistor | 1 | D0 external pull-up |
