@@ -181,10 +181,12 @@ numbering below):
 Needs a ~1µF ceramic capacitor from IN to GND and another from OUT to GND,
 both placed close to the chip (datasheet minimum is 0.5µF effective on OUT
 for stability; 1µF+ is recommended for transient response, which matters
-here given the LoRa TX current step) — these can land on the adapter board
-itself if it breaks out IN/OUT/GND to separate pads with room to solder a
-0805/0603 cap across them, or just off-board on the same protoboard as
-everything else.
+here given the LoRa TX current step). Through-hole, not SMD — the adapter
+board's own pads are too small for a through-hole part, so these land on
+the Perma-Proto's protoboard holes right next to where the adapter's IN/OUT
+pins seat, wired over with a short lead. Any generic through-hole ceramic
+capacitor assortment kit (widely sold on Amazon) will include something in
+range; exact capacitance/voltage rating isn't critical here.
 
 **Still keep the JST-PH 2.0mm disconnect** between the battery pack and the
 LDO's input, and still disconnect it before ever connecting USB. The LDO
@@ -227,9 +229,20 @@ Kept from the original plan — these parts didn't depend on getting the
 pinout right and hold up fine:
 
 - IP67 ABS junction box, ~125 x 75 x 75mm, all penetrations on the bottom
-  face only: SMA bulkhead (external antenna, screwed on pointing straight
-  down — keeps the connector shielded from pooling water and the radiation
-  pattern horizontal) and a PG7 cable gland for the sensor lead.
+  face only: SMA bulkhead and a PG7 cable gland for the sensor lead.
+- Antenna chain: the Wio-SX1262's onboard U.FL connector to a
+  [U.FL-to-SMA-bulkhead pigtail](https://www.digikey.com/en/products/detail/rf-solutions/CBA-UFLSMA-1/5845754)
+  (confirmed bulkhead mount, standard SMA — not RP-SMA), through the
+  enclosure's bottom face, to an external
+  [915MHz SMA whip antenna](https://www.digikey.com/en/products/detail/nearson-inc/S463AM-915/4571855)
+  (confirmed matching standard-SMA-male connector) screwed directly onto the
+  bulkhead's outside face, pointing straight down — keeps the connector
+  shielded from pooling water and the radiation pattern horizontal. The
+  antenna itself has no stated weatherproof rating; pointing it down and
+  relying on the bulkhead's own O-ring to seal the wall penetration is the
+  mitigation, not a substitute for one — worth swapping for an explicitly
+  IP-rated antenna (more of an Amazon/eBay category than a DigiKey one) if
+  that matters more than sourcing everything from one vendor.
 - 22/2 white UV-rated cable to the reed switch, joined to the switch's
   pigtail with adhesive solder-seal heat-shrink sleeves.
 - Reed switch: Interlogix 1085W-N or Honeywell 7945WH, fully potted, 1.5"
@@ -245,17 +258,18 @@ pinout right and hold up fine:
 | XIAO ESP32-C6 | 1 | already have |
 | Wio-SX1262 (for XIAO ESP32S3, through-hole variant) | 1 | already have |
 | Adafruit Perma-Proto Quarter-sized breadboard PCB | 1 | mounts the whole build — see "Mounting the stack" |
-| 2x7 female pin headers, 2.54mm pitch | 1 pair | socket for the stack, soldered to the protoboard |
-| Interlogix 1085W-N or Honeywell 7945WH reed switch | 1 | potted, 1.5" gap |
-| 3x AA Energizer Ultimate Lithium (L91) | 1 pack | ~3,000mAh nominal, ~1.0-1.8V/cell across life |
+| 2x7 female pin headers, 2.54mm pitch | 1 pair | already have |
+| Interlogix 1085W-N or Honeywell 7945WH reed switch | 1 | ordered |
+| 3x AA Energizer Ultimate Lithium (L91) | 1 pack | already have |
 | [Keystone Electronics 2465](https://www.digikey.com/en/products/detail/keystone-electronics/2465/303814) 3xAA holder | 1 | series-wired (4.5V), 6" bare leads, chassis mount, no cover |
 | TPS7A0233PDBVR (TI, SOT23-5, 3.3V fixed LDO) | 1 | bare chip — see "Power" |
 | Proto Advantage / Chip Quik PA0086C SOT23-5-to-DIP-6 adapter | 1 | confirmed 0.1" pitch, pins pre-installed — see "Power" |
-| 1µF ceramic capacitor | 2 | TPS7A02 IN and OUT bypass |
-| JST-PH 2.0mm 2-pin connector pair | 1 | battery disconnect for USB safety |
-| 1MΩ resistor | 1 | D0 external pull-up |
+| Through-hole ceramic capacitor, ~1µF | 2 | any generic assortment kit — see "Power" |
+| JST-PH 2.0mm 2-pin connector pair | 1 | already have (pre-crimped, inline-soldered) |
+| 1MΩ resistor | 1 | already have (from assortment) |
 | IP67 ABS junction box, ~125x75x75mm | 1 | |
-| SMA bulkhead + waterproof 915MHz antenna | 1 | |
+| [RF Solutions CBA-UFLSMA-1](https://www.digikey.com/en/products/detail/rf-solutions/CBA-UFLSMA-1/5845754) U.FL-to-SMA bulkhead pigtail | 1 | bulkhead, standard SMA (not RP-SMA) — see "Enclosure and cable routing" |
+| [Nearson S463AM-915](https://www.digikey.com/en/products/detail/nearson-inc/S463AM-915/4571855) 915MHz SMA antenna | 1 | standard SMA male, matches the pigtail above; no weatherproof rating specified — see "Enclosure and cable routing" |
 | PG7 cable gland | 1 | |
 | 22/2 white UV cable | as needed | ~50ft roll |
 | Solder-seal heat-shrink sleeves | a few | splice to switch pigtail |
