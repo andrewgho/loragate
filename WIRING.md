@@ -248,7 +248,7 @@ pinout right and hold up fine:
 | 2x7 female pin headers, 2.54mm pitch | 1 pair | socket for the stack, soldered to the protoboard |
 | Interlogix 1085W-N or Honeywell 7945WH reed switch | 1 | potted, 1.5" gap |
 | 3x AA Energizer Ultimate Lithium (L91) | 1 pack | ~3,000mAh nominal, ~1.0-1.8V/cell across life |
-| 3x AA battery holder (inline or triangular) | 1 | less common than 2x/4x but easy to source |
+| [Keystone Electronics 2465](https://www.digikey.com/en/products/detail/keystone-electronics/2465/303814) 3xAA holder | 1 | series-wired (4.5V), 6" bare leads, chassis mount, no cover |
 | TPS7A0233PDBVR (TI, SOT23-5, 3.3V fixed LDO) | 1 | bare chip — see "Power" |
 | Proto Advantage / Chip Quik PA0086C SOT23-5-to-DIP-6 adapter | 1 | confirmed 0.1" pitch, pins pre-installed — see "Power" |
 | 1µF ceramic capacitor | 2 | TPS7A02 IN and OUT bypass |
