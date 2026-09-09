@@ -5,6 +5,8 @@ SKETCH    = $(notdir $(CURDIR))
 BUILD_DIR = build
 DBG_DIR   = build-debug
 
+compile: $(BUILD_DIR)/$(SKETCH).ino.bin
+
 $(BUILD_DIR)/$(SKETCH).ino.bin: *.ino *.h local.h
 	arduino-cli compile --verbose --fqbn $(FQBN) --build-path $(BUILD_DIR) .
 
@@ -31,4 +33,4 @@ monitor:
 clean:
 	rm -rf $(BUILD_DIR) $(DBG_DIR)
 
-.PHONY: upload flash debug monitor clean
+.PHONY: compile upload flash debug monitor clean
