@@ -76,7 +76,8 @@ measured yet, they're either datasheet figures or estimates:
 | Floating/unused GPIOs | ~6.5µA | mitigated by setting unused pins to `ANALOG`/input-disabled before sleep |
 | Reed switch pull-up | ~3.3µA (closed) | external 1MΩ per WIRING.md, not the ~73µA an internal pull-up would cost |
 | TPS7A02 LDO | ~0.000025µA | 25nA typical, even in dropout — doesn't move the total |
-| **Total estimate** | **~38µA** | vs. the original plan's ~65µA, mostly because the pull-up choice differs |
+| Battery-voltage divider + ADC | ~1.3µA (fresh pack, worst case) | 4.7MΩ+2.2MΩ raw-battery divider (~0.78µA) plus the ADS1115's own ~0.5µA typical power-down draw — see WIRING.md's "Battery voltage monitoring" |
+| **Total estimate** | **~39µA** | vs. the original plan's ~65µA, mostly because the pull-up choice differs |
 
 Active transmit: ~120ms at ~35mA per event (radio TX current at 22dBm,
 datasheet figure) — negligible against sleep current unless the gate cycles
@@ -92,11 +93,11 @@ its output regardless of input voltage, so the third cell costs nothing
 here, per WIRING.md's "Power" section:
 
 ```
-sleep:  0.038mA * 24h                    ≈ 0.912 mAh/day
+sleep:  0.039mA * 24h                    ≈ 0.936 mAh/day
 active: 20 * 0.120s * 35mA / 3600        ≈ 0.023 mAh/day
-total                                    ≈ 0.935 mAh/day
+total                                    ≈ 0.959 mAh/day
 
-2,100 mAh / (0.935 mAh/day * 365)        ≈ 6.1 years
+2,100 mAh / (0.959 mAh/day * 365)        ≈ 6.0 years
 ```
 
 Treat this as optimistic-of-the-corrected-numbers, not a promise — the
@@ -122,7 +123,15 @@ catch anything the table missed.
   judged "close enough" — this is explicitly the lower-priority half of the
   build.
 - The LDO added for battery safety (WIRING.md) regulates out the raw battery
-  voltage, so `A1`/`VBAT` will read a flat ~3.3V for most of the pack's life
-  instead of trending down with it — undermines the heartbeat message's
-  battery-monitoring goal unless a raw-battery voltage divider gets added on
-  a spare pin (see WIRING.md's "Power" section). Not designed yet.
+  voltage, so `A1`/`VBAT` reads a flat ~3.3V for most of the pack's life
+  instead of trending down with it. Fixed in WIRING.md's "Battery voltage
+  monitoring" section: a raw-battery divider into a small I2C ADC (ADS1115)
+  on D6/D7, since it turned out no ESP32 ADC pin was actually free (see that
+  section for why). Hardware designed; firmware to read it over I2C on wake
+  and add the value to the heartbeat packet doesn't exist yet. When writing
+  it: set the ADS1115's PGA gain register for ±4.096V full scale (not the
+  library default ±2.048V) — this is a resolution/accuracy tradeoff in our
+  favor, not a hazard like the MCP3421 alternative WIRING.md considered and
+  rejected would have been, so getting it wrong just means slightly worse
+  (not broken) readings. See WIRING.md's "Why the ADS1115 over the MCP3421
+  considered earlier" for the numbers.

@@ -22,8 +22,8 @@ All 14 XIAO header pins, one source of truth:
 | D3 | GPIO21 | LoRa BUSY |
 | D4 | GPIO22 | LoRa NSS |
 | D5 | GPIO23 | LoRa RF_SW |
-| D6 | GPIO16 | free — **RTC SDA** if added |
-| D7 | GPIO17 | free — **RTC SCL** if added |
+| D6 | GPIO16 | **I2C SDA** — battery-voltage ADC (ADS1115); shared bus for RTC SDA if added |
+| D7 | GPIO17 | **I2C SCL** — battery-voltage ADC (ADS1115); shared bus for RTC SCL if added |
 | D8 | GPIO19 | LoRa SCK |
 | D9 | GPIO20 | LoRa MISO |
 | D10 | GPIO18 | LoRa MOSI |
@@ -199,12 +199,150 @@ board's own supply rail, which after the LDO is the *regulated* 3.3V output,
 not the raw battery voltage — it'll read a flat ~3.3V for most of the pack's
 life and only start to sag once the pack drops close to the LDO's dropout
 point, right near end of life. That's not enough resolution to trend battery
-health the way the protocol's heartbeat message is meant to. If that
-matters, the fix is a simple resistor divider from the *raw* battery (before
-the LDO) into a spare ADC-capable pin — D6 or D7, whichever isn't claimed by
-the DS3231 if that gets added — sized to bring the ~2.4-5.4V pack range down
-under the ADC's ~3.3V ceiling. Not designed yet; flagging it here since it's
-a direct consequence of the LDO decision above, not a separate nice-to-have.
+health the way the protocol's heartbeat message is meant to.
+
+### Battery voltage monitoring
+
+The original fix-it-later idea here was "read the raw battery through a
+divider into a spare ADC pin" — D6 or D7. That turned out not to work: the
+ESP32-C6's ADC1 only exists on GPIO0-6, and this board only actually breaks
+three of those out to the header at all — `A0`/`A1`/`A2` = D0/D1/D2
+(confirmed against Espressif's own ESP32-C6 datasheet and Seeed's XIAO
+ESP32C6 pin docs, not just the schematic). D6/D7 (GPIO16/17) aren't
+ADC-capable on this chip — they're the board's default UART0 TX/RX lines.
+Of the three real ADC pins, D0 is the reed switch and D1/D2 are physically
+wired point-to-point to the Wio-SX1262's DIO1/RST pins (see the pin table
+above) — not just claimed by firmware, but electrically contended if
+anything else tries to share that node. So there's no ADC-capable pin left
+at all, not just none conveniently free.
+
+**Fix: move the raw-battery reading off the ESP32's own ADC entirely, onto
+a small I2C ADC on the D6/D7 bus instead.** I2C doesn't have the ADC1
+pin restriction — the ESP32 can route it to any GPIO via its peripheral
+matrix — so this sidesteps the pin shortage rather than fighting it, and
+D6/D7 were already earmarked for I2C (RTC) anyway; both devices can share
+the same two-wire bus at different addresses if the DS3231 gets added later.
+
+**ADS1115** (TI, 16-bit single-channel-as-used ΔΣ ADC, I2C): its single-shot
+mode does one conversion per trigger and then drops to ~0.5µA power-down
+*automatically* — same reasoning as the external reed pull-up above,
+preferring a part whose low-power state is the hardware default over one
+that depends on every code path getting a shutdown call right. It also
+fails safe on misconfiguration: the config register's power-on-reset value
+is already power-down/single-shot mode, so even firmware that never touches
+the register leaves the chip idle rather than free-running.
+
+Wiring:
+
+| ADS1115 pin | Connects to |
+|---|---|
+| VDD | XIAO 3V3 (regulated rail — a stable supply, not raw battery) |
+| GND | system GND |
+| SCL | D7/GPIO17 |
+| SDA | D6/GPIO16 |
+| ADDR | GND (selects I2C address 0x48 — see "Sourcing" below on address flexibility) |
+| AIN0 | raw-battery divider tap (below) |
+| AIN1 | GND (single-ended: `AIN0 - GND`) |
+
+Divider: raw battery+ (tapped before the LDO, same node as the LDO's IN
+pin) through 4.7MΩ to a tap node, then 2.2MΩ from that node to GND; the tap
+feeds AIN0. Ratio ≈0.319 maps the pack's ~2.4-5.4V range to ~0.77-1.72V.
+
+This divider is the only new always-on current path (the ADS1115 itself is
+asleep except for one brief conversion per wake cycle, and idle I2C
+pull-ups draw nothing when both lines rest high). Worst case, fresh pack at
+~5.4V: 5.4V / 6.9MΩ ≈ 0.78µA, plus the chip's own ~0.5µA typical power-down
+draw — about a 3% addition to the ~38µA sleep budget in `PLAN.md`.
+
+#### Why the ADS1115 over the MCP3421 considered earlier
+
+An 18-bit MCP3421 was the first part specced here, and it technically
+works, but it forces an awkward firmware constraint: its switched-capacitor
+front end presents only **2.25MΩ/PGA** input impedance (2.25MΩ at its
+lowest gain), and our ~6.9MΩ divider (1.5MΩ Thevenin-equivalent) loads that
+down by roughly 40% if sampled naively. The fix was solvable but fiddly — a
+reservoir cap at the tap plus forcing the ADC into its 12-bit/240 SPS mode
+specifically, since its native 18-bit/3.75 SPS mode would sag that cap by
+~200mV mid-conversion. Workable, but a firmware bug that left it at 18-bit
+would silently corrupt every reading rather than just being coarser.
+
+The ADS1115 sidesteps this rather than needing the workaround. Its
+differential input impedance depends on which full-scale range (PGA
+setting) is selected — TI's datasheet gives 4.9MΩ at the default ±2.048V
+range, climbing to **15MΩ at ±4.096V** and 22MΩ at ±6.144V. Our divider tap
+tops out at 1.72V, comfortably inside any of those ranges, so there's no
+reason to use the default — set the gain register for **±4.096V full
+scale** (`GAIN_ONE` in most libraries) and the loading error drops to
+1.5MΩ/(1.5MΩ+15MΩ) ≈ 9%, a fixed, calibratable scale factor rather than a
+dynamic conversion-time-dependent sag. (±6.144V/22MΩ loads even less, ~6%,
+but per the datasheet only reaches its full range unclamped when
+VDD > 4V — ours is 3.3V — so ±4.096V is the clean choice without reading
+into that caveat.) At that setting the LSB is 125µV at the tap ≈ 0.39mV at
+the battery — still far finer than a battery trend needs.
+
+Because the loading current is so much smaller here (peak ~115nA vs. the
+MCP3421's ~760nA), even a modest 1µF cap at the tap keeps droop negligible
+at *any* ADS1115 data rate, including the slowest (8 SPS, ~125ms
+conversion ≈ 14µV droop — still tiny next to the 125µV LSB). There's no
+resolution/conversion-time tradeoff to get right in firmware here; the
+library's ordinary default data rate (typically 128 SPS) is fine as-is.
+The cap does still need time to recover between readings — the same
+~5 × (1.5MΩ × 1µF) ≈ 7.5s as before — but one reading per wake, as the
+heartbeat wants anyway, is well clear of that.
+
+#### Sourcing
+
+A breakout board avoids needing a SOT-to-DIP adapter alongside the LDO's,
+and a 0.1" header drops straight into the Perma-Proto. Generic unbranded
+modules are the usual worry here — some bundle an onboard 5V→3.3V regulator
+or an undocumented LED, either adding leakage that doesn't show up until
+it's measured, which is what ruled out a generic MCP3421 module earlier.
+That's a real risk in general, but it's checkable rather than a reason to
+default to the pricier documented option, *if* the specific listing's
+schematic can actually be seen first.
+
+**Recommended: the common "HW-543"-silkscreened purple-PCB ADS1115/ADS1015
+board** sold under many different storefront names on Amazon (same shared
+PCB stuffed with either chip, same way Adafruit's #1085/#1083 pair is) —
+cheap, and ships same/next-day from Amazon rather than direct from
+Adafruit. Confirmed by reading the schematic printed on one such listing's
+own photos, not just the description:
+
+- **No power LED at all** — not a jumper to cut, the circuit simply doesn't
+  include one. Also no onboard voltage regulator; VDD passes to the chip
+  through two ferrite beads (filtering only), matching the photographed
+  board (just the ADS1115/ADS1015 SOIC and a handful of passives — no
+  second chip that would indicate a hidden regulator).
+- 10kΩ pull-ups on SCL, SDA, and ADDR (and one on ALERT, unused here), plus
+  a 1µF + ~0.1µF decoupling pair at VDD — same values assumed elsewhere in
+  this doc.
+- 10-pin 0.1" header: `V G SCL SDA ADDR ALERT A0 A1 A2 A3`. ADDR is a bare
+  header pin here rather than a solder jumper, so any of TI's four
+  addresses can be wired directly (GND/VDD/SDA/SCL → 0x48/0x49/0x4A/0x4B) —
+  tie to GND for 0x48, clear of the DS3231's fixed 0x68, same as the plan
+  above.
+
+Because this is an unbranded design, **check the schematic printed on
+whichever specific listing you buy from** before assuming it matches — the
+"HW-543" reference design is extremely widely cloned, but a seller
+substituting a different silkscreen board under the same listing text
+isn't unheard of on Amazon. A listing that shows its schematic (as
+[this one's product photos did](https://m.media-amazon.com/images/I/71fcLPzMRHL._SL1500_.jpg))
+is confirmable the same way the DS3231 caveat below asks for; one that
+doesn't isn't a stop-ship, since these are simple enough that a $10 meter
+can verify no-LED/no-regulator in a minute once it arrives, but confirm
+before soldering it into the final build.
+
+**Alternative: [Adafruit ADS1115 breakout (#1085)](https://www.adafruit.com/product/1085)**
+— or its 12-bit sibling on the same PCB, [ADS1015 (#1083)](https://www.adafruit.com/product/1083),
+which would work identically here since 12 bits is already more than this
+application needs. Costs more and ships slower than an Amazon listing, but
+is the fully-documented fallback if a specific Amazon board's schematic
+can't be confirmed: 10kΩ I2C pull-ups onboard, 2-5V VIN, a 0.1" header
+included in the bag, a power LED with a **documented cuttable jumper** on
+the back of the board (no desoldering needed), and an I2C address
+pin-selectable across all four values (0x48/0x49/0x4A/0x4B via ADDR, plus a
+second back-of-board solder jumper for a further option).
 
 ## Optional: DS3231 RTC
 
@@ -267,6 +405,10 @@ pinout right and hold up fine:
 | Through-hole ceramic capacitor, ~1µF | 2 | any generic assortment kit — see "Power" |
 | JST-PH 2.0mm 2-pin connector pair | 1 | already have (pre-crimped, inline-soldered) |
 | 1MΩ resistor | 1 | already have (from assortment) |
+| ADS1115 I2C ADC — "HW-543"-style purple-PCB breakout (generic, ships fast from Amazon; confirm the specific listing's schematic — no LED, no regulator), or [Adafruit #1085](https://www.adafruit.com/product/1085) as the documented fallback | 1 | battery-voltage monitoring, address 0x48 (clear of the DS3231's 0x68) — see "Battery voltage monitoring" → "Sourcing" |
+| 4.7MΩ resistor | 1 | raw-battery divider, top half |
+| 2.2MΩ resistor | 1 | raw-battery divider, bottom half |
+| Through-hole ceramic capacitor, ~1µF | 1 | divider-tap filter cap — cheap insurance, not load-bearing at this ADC's impedance, see "Battery voltage monitoring" |
 | IP67 ABS junction box, ~125x75x75mm | 1 | |
 | [RF Solutions CBA-UFLSMA-1](https://www.digikey.com/en/products/detail/rf-solutions/CBA-UFLSMA-1/5845754) U.FL-to-SMA bulkhead pigtail | 1 | bulkhead, standard SMA (not RP-SMA) — see "Enclosure and cable routing" |
 | [Nearson S463AM-915](https://www.digikey.com/en/products/detail/nearson-inc/S463AM-915/4571855) 915MHz SMA antenna | 1 | standard SMA male, matches the pigtail above; no weatherproof rating specified — see "Enclosure and cable routing" |
