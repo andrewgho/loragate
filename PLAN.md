@@ -75,9 +75,11 @@ measured yet, they're either datasheet figures or estimates:
 | Board passive leakage | ~8µA | estimate, not measured |
 | Floating/unused GPIOs | ~6.5µA | mitigated by setting unused pins to `ANALOG`/input-disabled before sleep |
 | Reed switch pull-up | ~3.3µA (closed) | external 1MΩ per WIRING.md, not the ~73µA an internal pull-up would cost |
-| TPS7A02 LDO | ~0.000025µA | 25nA typical, even in dropout — doesn't move the total |
 | Battery-voltage divider + ADC | ~1.3µA (fresh pack, worst case) | 4.7MΩ+2.2MΩ raw-battery divider (~0.78µA) plus the ADS1115's own ~0.5µA typical power-down draw — see WIRING.md's "Battery voltage monitoring" |
-| **Total estimate** | **~39µA** | vs. the original plan's ~65µA, mostly because the pull-up choice differs |
+| LDO quiescent — Option A (TPS7A0233) | ~0.000025µA | 25nA typical, even in dropout — doesn't move the total. Not currently installed — see WIRING.md's "Power" → "Choosing an LDO" |
+| LDO quiescent — Option B (MCP1700) | ~1.6µA typ / 4µA max | 60-160x Option A's figure, but confirmed working. **Currently installed** |
+| **Total, Option A** | **~39µA** | vs. the original plan's ~65µA, mostly because the pull-up choice differs |
+| **Total, Option B (as currently built)** | **~41µA typ / ~44µA max** | same breakdown, with Option B's higher LDO quiescent current in place of Option A's |
 
 Active transmit: ~120ms at ~35mA per event (radio TX current at 22dBm,
 datasheet figure) — negligible against sleep current unless the gate cycles
@@ -90,15 +92,28 @@ WIRING.md). Series cells don't add capacity, only voltage, so the 3-cell
 pack's mAh figure is the same as a 2-cell pack's would have been — the LDO
 regulator draws roughly the same current from its input as it delivers at
 its output regardless of input voltage, so the third cell costs nothing
-here, per WIRING.md's "Power" section:
+here, per WIRING.md's "Power" section. Figured for both LDO options, since
+neither is more "correct" than the other until Option A has a working unit
+to measure:
 
 ```
+Option A (TPS7A0233):
 sleep:  0.039mA * 24h                    ≈ 0.936 mAh/day
 active: 20 * 0.120s * 35mA / 3600        ≈ 0.023 mAh/day
 total                                    ≈ 0.959 mAh/day
-
 2,100 mAh / (0.959 mAh/day * 365)        ≈ 6.0 years
+
+Option B (MCP1700, typical IQ — as currently built):
+sleep:  0.0412mA * 24h                   ≈ 0.989 mAh/day
+active: 20 * 0.120s * 35mA / 3600        ≈ 0.023 mAh/day
+total                                    ≈ 1.012 mAh/day
+2,100 mAh / (1.012 mAh/day * 365)        ≈ 5.7 years
 ```
+
+Option B at its 4µA worst-case (not just 1.6µA typical) comes out to
+roughly 5.4 years instead of 5.7 — still comfortably clears the "2+ years
+would be satisfying in practice" bar this project is actually targeting,
+which matters more here than the gap between the two options.
 
 Treat this as optimistic-of-the-corrected-numbers, not a promise — the
 individual leakage line items are still estimates. Worth an actual current

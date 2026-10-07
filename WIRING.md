@@ -86,9 +86,17 @@ back software pull-up juggling.
 
 ## Power
 
-**3x AA Energizer Ultimate Lithium (L91) cells in series, through a
-TPS7A0233 nanopower LDO, into the XIAO's 3V3/GND header pins — not the
-board's dedicated BAT solder pads, and not a direct battery connection.**
+**3x AA Energizer Ultimate Lithium (L91) cells in series, through an LDO,
+into the XIAO's 3V3/GND header pins — not the board's dedicated BAT solder
+pads, and not a direct battery connection.** Two LDO options are documented
+below ("Choosing an LDO") rather than one — the goal here isn't just this
+one transmitter but building up a small library of validated power
+solutions for this class of project, so both are kept even though only one
+is installed at a time. **Currently installed: Option B (MCP1700, TO-92),**
+confirmed regulating 3.3V on the bench. Option A (TPS7A0233) is the lower-
+quiescent-current pick and remains the long-term target, but the first
+bench unit tested dead (0V output, no load) and is set aside pending a
+replacement part to retry.
 
 ### Why primary lithium over rechargeable Li-ion/LiPo
 
@@ -125,25 +133,37 @@ onboard Li-ion/LiPo charge controller tuned for a rechargeable 3.7V cell,
 which will try to charge whatever's connected there. Primary cells aren't
 designed to be recharged.
 
-### The fix: TPS7A0233 LDO + a third cell
+### Choosing an LDO
+
+Whichever chip is used, the sizing logic is the same: fixed 3.3V output,
+needs to accept the pack's full discharge range without exceeding its own
+input ceiling. Going to 3 cells instead of 2 puts the fresh-pack voltage
+(~5.1-5.4V) safely under either candidate's 6.0V input ceiling with room to
+spare, and keeps the LDO in regulation through nearly the entire discharge
+curve rather than just clipping the fresh-cell peak. This doesn't cost
+anything in mAh-based battery life — a linear regulator draws roughly the
+same current from its input as it delivers at its output, regardless of
+the input voltage, so battery life (capacity ÷ current drawn) is unaffected
+by adding a third cell in series.
+
+Two options are documented below, both confirmed against their datasheets
+and (for Option B) against a working bench test:
+
+#### Option A: TPS7A0233 (TI) — nanopower target, debugging in progress
 
 [TI TPS7A02](https://www.ti.com/lit/ds/symlink/tps7a02.pdf), 3.3V fixed
 output (part suffix `33`), SOT23-5 package (`DBV`) — 25nA quiescent current
 even in dropout, 1.5-6.0V input range, 270mV max dropout at a full 200mA
-load (far less at our currents). Ordering as
+load (far less at our currents). This is the true-nanopower pick — its
+quiescent current is roughly 60-160x lower than Option B's — but the first
+bench unit built tested dead (0V on OUT despite correct IN and EN voltages,
+narrowed down to a hardware fault on that specific unit or its solder joint,
+not the design); a replacement part is on order to retry. Ordering as
 [TPS7A0233PDBVR](https://www.digikey.com/en/products/detail/texas-instruments/TPS7A0233PDBVR/12165099)
 — the `P` before the package code is TI's convention for "built at a newer
 assembly/test site," not a spec or pinout difference (confirmed against TI's
 own explanation of the same convention on a different part family);
 `TPS7A0233DBVR` without the `P` is the same device and works identically.
-Going to 3 cells instead of 2 puts the
-fresh-pack voltage (~5.1-5.4V) safely under the LDO's 6.0V input ceiling
-with room to spare, and keeps the LDO in regulation through nearly the
-entire discharge curve rather than just clipping the fresh-cell peak. This
-doesn't cost anything in mAh-based battery life — a linear regulator draws
-roughly the same current from its input as it delivers at its output,
-regardless of the input voltage, so battery life (capacity ÷ current drawn)
-is unaffected by adding a third cell in series.
 
 No one sells a ready-made breakout for this (or any other nanopower-tier
 LDO) — it's an SMD-chip-only market segment. The practical build path is a
@@ -180,13 +200,58 @@ numbering below):
 
 Needs a ~1µF ceramic capacitor from IN to GND and another from OUT to GND,
 both placed close to the chip (datasheet minimum is 0.5µF effective on OUT
-for stability; 1µF+ is recommended for transient response, which matters
-here given the LoRa TX current step). Through-hole, not SMD — the adapter
+for stability — input cap is not strictly required for stability per the
+datasheet but is good practice; 1µF+ on both is recommended for transient
+response, which matters here given the LoRa TX current step). **Must be
+low-ESR ceramic** (X7R/X5R/C0G) — the datasheet specifies the part is
+compensated for ceramic specifically; an electrolytic's higher ESR falls
+outside that design and risks output oscillation that a slow multimeter
+reading can mask rather than reveal. Through-hole, not SMD — the adapter
 board's own pads are too small for a through-hole part, so these land on
 the Perma-Proto's protoboard holes right next to where the adapter's IN/OUT
-pins seat, wired over with a short lead. Any generic through-hole ceramic
-capacitor assortment kit (widely sold on Amazon) will include something in
-range; exact capacitance/voltage rating isn't critical here.
+pins seat, wired over with a short lead.
+
+#### Option B: MCP1700 (Microchip, TO-92) — confirmed working, currently installed
+
+[Microchip MCP1700](https://ww1.microchip.com/downloads/aemDocuments/documents/APID/ProductDocuments/DataSheets/MCP1700-Data-Sheet-20001826F.pdf),
+3.3V fixed output (`MCP1700T-3302E` for SOT-23, `MCP1700-3302E/TO` for
+TO-92) — 1.6µA typical / 4µA max quiescent current, 2.3-6.0V input range,
+150mV typical dropout @ 200mA / 178mV @ 250mA (both far less at our
+currents). Quiescent current is meaningfully higher than Option A's — see
+`PLAN.md`'s power budget for the resulting battery-life difference — but
+this part is simpler to build and confirmed working: **bare 3-terminal
+part (GND, VIN, VOUT) with no enable pin at all**, so there's no EN-tied-
+wrong, EN-left-floating class of mistake to make. Built and bench-tested in
+the **TO-92** package specifically, which plugs directly into the
+Perma-Proto with no SOT-to-DIP adapter needed — legs bent to the standard
+0.1" grid.
+
+**Package orientation (confirmed against the datasheet's mechanical outline
+drawing and cross-checked against an independent pinout source, since the
+datasheet's own orthographic TOP VIEW/VIEW A-A drawing doesn't label pin
+numbers on the view that shows flat-vs-round orientation):** holding the
+part with its flat, marked face toward you and the three legs pointing down
+toward the board, the pins left to right are **GND, VIN, VOUT** — matching
+Table 3-1 of the datasheet. The SOT-23 package (if used instead) has a
+*different* order — GND, VOUT, VIN, with VOUT and VIN swapped — so don't
+assume the two packages share a pinout.
+
+| MCP1700 pin (TO-92, flat face toward viewer) | Connects to |
+|---|---|
+| 1 (GND, leftmost) | battery − / system GND |
+| 2 (VIN, middle) | battery + (through the JST-PH disconnect, see below) |
+| 3 (VOUT, rightmost) | XIAO 3V3 pin (lands on the protoboard's 3V3 socket pad — see "Mounting the stack" above) |
+
+Needs a ~1µF capacitor on **both** VIN-to-GND and VOUT-to-GND — unlike
+Option A, the datasheet treats the input capacitor as required for
+stability, not just good practice ("a relatively low source impedance is
+needed to prevent the input impedance from causing the LDO to become
+unstable... 1µF ceramic capacitor will be sufficient"), and separately
+requires "a minimum output capacitance of 1.0µF... for small signal
+stability." More forgiving than Option A on capacitor type, though: ceramic,
+tantalum, or aluminum electrolytic are all explicitly stated as acceptable,
+with the output cap tolerating an ESR range of 0 to 2.0Ω — the existing
+1µF X7R ceramics work fine and are what's actually installed.
 
 **Still keep the JST-PH 2.0mm disconnect** between the battery pack and the
 LDO's input, and still disconnect it before ever connecting USB. The LDO
@@ -400,9 +465,11 @@ pinout right and hold up fine:
 | Interlogix 1085W-N or Honeywell 7945WH reed switch | 1 | ordered |
 | 3x AA Energizer Ultimate Lithium (L91) | 1 pack | already have |
 | [Keystone Electronics 2465](https://www.digikey.com/en/products/detail/keystone-electronics/2465/303814) 3xAA holder | 1 | series-wired (4.5V), 6" bare leads, chassis mount, no cover |
-| TPS7A0233PDBVR (TI, SOT23-5, 3.3V fixed LDO) | 1 | bare chip — see "Power" |
-| Proto Advantage / Chip Quik PA0086C SOT23-5-to-DIP-6 adapter | 1 | confirmed 0.1" pitch, pins pre-installed — see "Power" |
-| Through-hole ceramic capacitor, ~1µF | 2 | any generic assortment kit — see "Power" |
+| TPS7A0233PDBVR (TI, SOT23-5, 3.3V fixed LDO) | 1 | **Option A**, not currently installed — bare chip, debugging in progress — see "Power" → "Choosing an LDO" |
+| Proto Advantage / Chip Quik PA0086C SOT23-5-to-DIP-6 adapter | 1 | **Option A only** — confirmed 0.1" pitch, pins pre-installed — see "Power" |
+| Through-hole ceramic capacitor, ~1µF | 2 | **Option A** — IN and OUT bypass, must be low-ESR ceramic — see "Power" |
+| MCP1700-3302E/TO (Microchip, TO-92, 3.3V fixed LDO) | 1 | **Option B, currently installed** — confirmed working, no adapter needed — see "Power" → "Choosing an LDO" |
+| Through-hole ceramic capacitor, ~1µF ("105") | 2 | **Option B** — VIN and VOUT bypass, both required for stability; ceramic/tantalum/electrolytic all acceptable — see "Power" |
 | JST-PH 2.0mm 2-pin connector pair | 1 | already have (pre-crimped, inline-soldered) |
 | 1MΩ resistor | 1 | already have (from assortment) |
 | ADS1115 I2C ADC — "HW-543"-style purple-PCB breakout (generic, ships fast from Amazon; confirm the specific listing's schematic — no LED, no regulator), or [Adafruit #1085](https://www.adafruit.com/product/1085) as the documented fallback | 1 | battery-voltage monitoring, address 0x48 (clear of the DS3231's 0x68) — see "Battery voltage monitoring" → "Sourcing" |
