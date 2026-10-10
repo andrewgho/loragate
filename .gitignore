@@ -1,3 +1,4 @@
 build/
 build-debug/
 local.h
+datasheets/*.txt
