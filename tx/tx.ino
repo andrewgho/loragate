@@ -214,8 +214,20 @@ void report_door_transition() {
 
 void setup() {
   Serial.begin(115200);
+#ifdef DEBUG
+  // Only wait for a monitor in debug builds, where one is deliberately
+  // attached before the device sleeps (see tx/Makefile's make debug).
+  // Waiting here in production would cost up to 3s of fully-awake CPU
+  // time on *every* wake: deep sleep powers down the USB peripheral, so
+  // there's never anyone listening in the field and !Serial never goes
+  // true early — this loop would just burn out its full timeout, every
+  // time, forever. That's both the dominant source of wake-to-report
+  // latency and a real battery-life cost (comparable to the entire rest
+  // of the daily budget in PLAN.md's power budget table), not just a
+  // debug-build-only nuisance.
   uint32_t t0 = millis();
   while (!Serial && millis() - t0 < 3000) delay(10);
+#endif
 
   Serial.println("loragate tx");
 

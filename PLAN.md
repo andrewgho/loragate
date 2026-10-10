@@ -130,6 +130,25 @@ Active transmit: ~120ms at ~35mA per event (radio TX current at 22dBm,
 datasheet figure) — negligible against sleep current unless the gate cycles
 constantly.
 
+That 120ms figure is the radio burst alone — it doesn't include whatever
+the CPU does awake before and after it, which this table has otherwise
+been treating as negligible. That assumption was briefly false in
+practice: `tx/tx.ino` had (until the fix below) a `while (!Serial && ...)`
+wait-for-USB-monitor loop at the top of `setup()`, capped at 3000ms, which
+never short-circuits early when nothing's listening — i.e. every real
+deployment, every wake. At ~20-30mA of plain-awake CPU current, 3s/wake is
+roughly 0.02 mAh *per wake*, which at 24+ wakes/day (the hourly floor
+alone) is in the same ballpark as this table's entire daily total —
+observed directly as human-noticeable wake-to-report latency during live
+testing, which is how it was caught. Fixed by gating that wait behind
+`-DDEBUG` (a monitor is only ever actually attached in debug builds, per
+`make debug`'s own convention), so production wakes proceed immediately.
+The rest of setup()'s awake time before/after the radio burst (SPI/radio
+init, debounce settles, Serial.println calls) is still real but much
+smaller and currently unmeasured — worth confirming with an actual
+current-vs-time trace once hardware is available, not assumed negligible
+by default now that this table has already been wrong about that once.
+
 At 20 transitions/day (10 open + 10 close) and ~2,100-2,250mAh realistically
 extractable from the L91 pack (nominal 3,000mAh derated for cold-weather
 internal resistance and brownout headroom — see the L91 datasheet linked in
