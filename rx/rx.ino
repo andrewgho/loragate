@@ -25,6 +25,15 @@
 // NTP resync due, held-open/staleness thresholds, WiFi health.
 #define HOUSEKEEPING_INTERVAL_MS 1000
 
+// Our own short-open alert: fires if the door's been open this long without
+// a close, independent of anything the transmitter itself decides to send.
+#define SHORT_OPEN_THRESHOLD_SECONDS 45
+
+// How long tx/tx.ino waits before sending PKT_DOOR_HELD_OPEN — needs to
+// match its HELD_OPEN_CHECK_SECONDS, since that number isn't on the wire
+// (the packet just says "still open", not "still open since when").
+#define TX_HELD_OPEN_SECONDS 300
+
 #ifdef DEBUG
   #define LOG(fmt, ...) Serial.printf("[DBG] " fmt "\n", ##__VA_ARGS__)
 #else
@@ -38,6 +47,12 @@ void IRAM_ATTR set_rx_flag() { rx_flag = true; }
 
 bool startup_log_sent = false;
 uint32_t last_ntp_sync_ms = 0;  // 0 = never synced; see run_housekeeping()
+
+// Our own idea of the door state, independent of whatever tx/tx.ino thinks
+// — kept so we can raise the short-open alert without waiting on a packet.
+bool door_is_open = false;
+uint32_t door_opened_at_ms = 0;  // meaningful only while door_is_open
+bool short_open_alerted = false; // true once we've reported this open episode
 
 // Requests a clock sync from NTP_SERVER. Passing it for all three of
 // configTime()'s server slots (instead of leaning on its pool.ntp.org /
@@ -79,6 +94,12 @@ void run_housekeeping() {
   if (WiFi.status() == WL_CONNECTED && millis() - last_ntp_sync_ms >= NTP_RESYNC_INTERVAL_MS) {
     sync_ntp();
   }
+
+  if (door_is_open && !short_open_alerted &&
+      millis() - door_opened_at_ms >= SHORT_OPEN_THRESHOLD_SECONDS * 1000UL) {
+    short_open_alerted = true;
+    report_door_open_past(SHORT_OPEN_THRESHOLD_SECONDS, nullptr);
+  }
 }
 
 // Performs an HTTP GET against `base_url` plus a localtime=<epoch seconds>
@@ -112,6 +133,20 @@ void http_get(const char *base_url) {
 void notify_transmitter_event(const char *url_template, uint32_t seq, uint8_t txno) {
   char url[256];
   snprintf(url, sizeof(url), url_template, (unsigned long)seq, (unsigned)txno);
+  http_get(url);
+}
+
+// Reports the door held open for `seconds` (DOOR_OPEN_PAST_URL_TEMPLATE's
+// path component). `pkt` is the PKT_DOOR_HELD_OPEN packet that prompted
+// this, for its seq/txno — pass nullptr for the locally-detected
+// SHORT_OPEN_THRESHOLD_SECONDS case, which isn't tied to any one packet.
+void report_door_open_past(unsigned seconds, const LoraPacket *pkt) {
+  char url[256];
+  int n = snprintf(url, sizeof(url), DOOR_OPEN_PAST_URL_TEMPLATE, seconds);
+  if (pkt && n > 0 && (size_t)n < sizeof(url)) {
+    snprintf(url + n, sizeof(url) - (size_t)n, "?seq=%lu&txno=%u",
+             (unsigned long)pkt->seq, (unsigned)pkt->txno);
+  }
   http_get(url);
 }
 
@@ -166,31 +201,14 @@ void handle_packet() {
     return;
   }
 
-  float rssi = radio.getRSSI();
-  float snr = radio.getSNR();
-
-  const char *url_template;
-  switch (pkt.type) {
-    case PKT_HEARTBEAT:
-      Serial.printf("RX heartbeat seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
-                    (unsigned long)pkt.seq, pkt.txno, rssi, snr);
-      url_template = HEARTBEAT_LOG_URL_TEMPLATE;
-      break;
-    case PKT_DOOR_OPEN:
-      Serial.printf("RX door open seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
-                    (unsigned long)pkt.seq, pkt.txno, rssi, snr);
-      url_template = DOOR_OPEN_URL_TEMPLATE;
-      break;
-    case PKT_DOOR_CLOSE:
-      Serial.printf("RX door close seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
-                    (unsigned long)pkt.seq, pkt.txno, rssi, snr);
-      url_template = DOOR_CLOSE_URL_TEMPLATE;
-      break;
-    default:
-      LOG("ignoring packet type=%d seq=%lu", pkt.type, (unsigned long)pkt.seq);
-      return;
+  if (pkt.type != PKT_HEARTBEAT && pkt.type != PKT_DOOR_OPEN &&
+      pkt.type != PKT_DOOR_CLOSE && pkt.type != PKT_DOOR_HELD_OPEN) {
+    LOG("ignoring packet type=%d seq=%lu", pkt.type, (unsigned long)pkt.seq);
+    return;
   }
 
+  // Ack every recognized packet so the transmitter stops retrying, before
+  // doing anything slower (HTTP) below.
   LoraPacket ack = { PKT_ACK, pkt.seq, 0 };
   int tx_st = radio.transmit((uint8_t *)&ack, sizeof(ack));
   if (tx_st != RADIOLIB_ERR_NONE) {
@@ -198,7 +216,39 @@ void handle_packet() {
   }
   radio.startReceive();  // transmit() leaves the radio in standby
 
-  notify_transmitter_event(url_template, pkt.seq, pkt.txno);
+  float rssi = radio.getRSSI();
+  float snr = radio.getSNR();
+
+  switch (pkt.type) {
+    case PKT_HEARTBEAT:
+      Serial.printf("RX heartbeat seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
+                    (unsigned long)pkt.seq, pkt.txno, rssi, snr);
+      notify_transmitter_event(HEARTBEAT_LOG_URL_TEMPLATE, pkt.seq, pkt.txno);
+      break;
+    case PKT_DOOR_OPEN:
+      Serial.printf("RX door open seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
+                    (unsigned long)pkt.seq, pkt.txno, rssi, snr);
+      door_is_open = true;
+      door_opened_at_ms = millis();
+      short_open_alerted = false;
+      notify_transmitter_event(DOOR_OPEN_URL_TEMPLATE, pkt.seq, pkt.txno);
+      break;
+    case PKT_DOOR_CLOSE:
+      Serial.printf("RX door close seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
+                    (unsigned long)pkt.seq, pkt.txno, rssi, snr);
+      door_is_open = false;
+      short_open_alerted = false;
+      notify_transmitter_event(DOOR_CLOSE_URL_TEMPLATE, pkt.seq, pkt.txno);
+      break;
+    case PKT_DOOR_HELD_OPEN:
+      Serial.printf("RX door held open seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
+                    (unsigned long)pkt.seq, pkt.txno, rssi, snr);
+      door_is_open = true;  // defensive — should already be true
+      report_door_open_past(TX_HELD_OPEN_SECONDS, &pkt);
+      break;
+    default:
+      break;  // unreachable — filtered above
+  }
 }
 
 void loop() {

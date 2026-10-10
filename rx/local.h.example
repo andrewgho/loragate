@@ -18,3 +18,8 @@
 #define DOOR_OPEN_URL_TEMPLATE     "http://192.168.1.12/notify/door/gate/open?seq=%lu&txno=%u"
 #define DOOR_CLOSE_URL_TEMPLATE    "http://192.168.1.12/notify/door/gate/close?seq=%lu&txno=%u"
 #define HEARTBEAT_LOG_URL_TEMPLATE "http://192.168.1.12/log/door/gate/heartbeat?seq=%lu&txno=%u"
+
+// Door held open past either SHORT_OPEN_THRESHOLD_SECONDS (our own check)
+// or TX_HELD_OPEN_SECONDS (the transmitter's) — the one placeholder (%u) is
+// that threshold, as the URL's last path component.
+#define DOOR_OPEN_PAST_URL_TEMPLATE "http://192.168.1.12/log/door/gate/open_past/%u"
