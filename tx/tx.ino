@@ -1,13 +1,24 @@
 // loragate tx — phase-2 door-sensor transmitter, deep-sleep cycle.
 //
 // Deep sleeps by default. Wakes on any reed-switch (D0) edge and reports
-// the new door state; while the door is open, also wakes every
-// HELD_OPEN_CHECK_SECONDS to report it's still open (PLAN.md's "Wake
-// behavior"). With the door closed, wakes on a HEARTBEAT_INTERVAL_SECONDS
-// timer if nothing else has happened by then and sends an explicit
-// heartbeat — but since every branch below already transmits something,
-// that's really just "transmit at least this often", not "transmit a
-// heartbeat specifically every hour".
+// the new door state. After an open edge, wakes once more at
+// HELD_OPEN_CHECK_SECONDS to re-verify against the real hardware state and
+// report it, if the door's still open then — a one-shot "someone probably
+// forgot about the door" check, not a repeating one: re-arming that same
+// 300s timer for as long as the door stayed open would mean ~280 wakes/day
+// of a left-open door, which is real battery budget (PLAN.md's power
+// budget) for a condition that one check has already reported. Once that
+// one check has fired (or if it never needed to, because the door closed
+// first), wakes fall back to the regular HEARTBEAT_INTERVAL_SECONDS timer
+// if nothing else has happened by then — but since every branch below
+// already transmits something, that's really just "transmit at least this
+// often", not "transmit a heartbeat specifically every hour".
+//
+// The receiver separately raises its own "door open past 45s" alert from
+// the initial open event alone, on its own clock — see rx/rx.ino and
+// README.md's "Phase 2 protocol". That's what covers "someone just opened
+// the door"; this file's HELD_OPEN_CHECK_SECONDS is the slower, hardware
+// re-verified "still open, probably forgotten" follow-up.
 //
 // RTC_DATA_ATTR state survives deep sleep (reset to zero only on power-on)
 // so the seq counter and committed door state carry across wake cycles;
@@ -27,8 +38,8 @@
 #define REED_PIN              0
 #define DEBOUNCE_MS           50
 
-// How long the door can stay open before we proactively re-report it, and
-// how often we keep re-reporting for as long as it stays open after that.
+// How long the door can stay open before we proactively re-report it —
+// once per open episode, not repeatedly (see the file header comment).
 #define HELD_OPEN_CHECK_SECONDS    300
 
 // How often to transmit *something* when the door isn't doing that on its
@@ -53,6 +64,8 @@ SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 RTC_DATA_ATTR uint32_t next_seq = 0;
 RTC_DATA_ATTR bool door_open_committed = false;   // last state we actually reported
 RTC_DATA_ATTR bool have_committed_state = false;  // false only before the first-ever report
+RTC_DATA_ATTR bool held_open_checked = false;     // true once PKT_DOOR_HELD_OPEN has
+                                                   // gone out for the current open episode
 
 volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
@@ -184,9 +197,12 @@ bool read_debounced_state() {
 // in its ack/retry loop. Keeps reporting and rechecking until the reported
 // state matches reality — so however many transitions happened while we
 // weren't listening, we always converge on reporting the true end state,
-// never leaving the receiver holding a stale one.
+// never leaving the receiver holding a stale one. Every transition here
+// starts a fresh open (or closed) episode, so held_open_checked resets too
+// — a new open edge gets its own HELD_OPEN_CHECK_SECONDS check.
 void report_door_transition(bool new_state) {
   door_open_committed = new_state;
+  held_open_checked = false;
   Serial.println(door_open_committed ? "door: open" : "door: close");
   send_event(door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
 
@@ -248,20 +264,29 @@ void setup() {
     // A reed-switch edge woke us (or we raced one on the way into the
     // previous sleep) — report the transition.
     report_door_transition(actual_open);
-  } else if (door_open_committed) {
-    // Door was already open and still is: HELD_OPEN_CHECK_SECONDS elapsed
-    // without a close edge.
-    Serial.println("door: still open");
+  } else if (door_open_committed && !held_open_checked) {
+    // Door was already open and still is, and this open episode hasn't had
+    // its one-shot HELD_OPEN_CHECK_SECONDS check yet — this wake is that
+    // check.
+    Serial.println("door: still open (held-open check)");
     send_event(PKT_DOOR_HELD_OPEN);
+    held_open_checked = true;
   } else {
-    // Door was already closed and still is: HEARTBEAT_INTERVAL_SECONDS
-    // elapsed without anything else to report.
+    // Either the door's closed, or it's open but already had its one-shot
+    // check — either way, HEARTBEAT_INTERVAL_SECONDS elapsed without
+    // anything else to report.
     Serial.println("heartbeat");
     send_event(PKT_HEARTBEAT);
   }
 
-  enter_safe_deep_sleep(door_open_committed,
-                         door_open_committed ? HELD_OPEN_CHECK_SECONDS : HEARTBEAT_INTERVAL_SECONDS);
+  // Only the still-unchecked-open case needs the short HELD_OPEN_CHECK_SECONDS
+  // wake; everything else (closed, or open-and-already-checked) uses the
+  // long heartbeat interval instead, so a left-open door doesn't keep this
+  // waking every 5 minutes for as long as it stays open.
+  uint32_t sleep_seconds = (door_open_committed && !held_open_checked)
+                                ? HELD_OPEN_CHECK_SECONDS
+                                : HEARTBEAT_INTERVAL_SECONDS;
+  enter_safe_deep_sleep(door_open_committed, sleep_seconds);
 }
 
 void loop() {}  // everything happens in setup(); each wake re-runs it from scratch

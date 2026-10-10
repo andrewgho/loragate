@@ -28,13 +28,22 @@ sleep, matching whichever edge is next expected:
   confirms each call fully replaces the previous ext1 config, so flipping
   the wakeup level between wakes is safe without an explicit disable call
   first.
-- **RTC timer, always armed** — 300s (`HELD_OPEN_CHECK_SECONDS`) while the
-  door is open, so a held-open door gets re-reported on that cadence for as
-  long as it stays open; `HEARTBEAT_INTERVAL_SECONDS` (1h default) while
-  closed, so *something* goes out at least that often even with no door
-  activity. Every event the firmware sends — open, close, held-open, or the
-  heartbeat itself — counts equally as "we're still alive" for this
-  purpose; there's no separate heartbeat clock to track across sleeps.
+- **RTC timer, always armed** — `HELD_OPEN_CHECK_SECONDS` (300s) once, right
+  after an open edge, to re-verify against real hardware state and report
+  if the door's still open; after that one check fires (or if the door
+  closes first and it's never needed), `HEARTBEAT_INTERVAL_SECONDS` (1h
+  default) the rest of the time, closed or open, so *something* goes out at
+  least that often even with no door activity. This is deliberately a
+  one-shot check, not a repeating one — re-arming 300s for as long as the
+  door stays open would mean ~280 wakes/day for a door left open all day,
+  which is real battery budget (see "Power budget" below) spent on a
+  condition the first check already reported. Every event the firmware
+  sends — open, close, held-open, or the heartbeat itself — counts equally
+  as "we're still alive" for this purpose; there's no separate heartbeat
+  clock to track across sleeps.
+  - The receiver's own ~45s "door open past" alert (independent of this,
+    see `README.md`'s "Phase 2 protocol") is what covers "someone just
+    opened the door" on a faster timescale than this 300s check needs to.
 
 ## Rapid-slam / bounce guard
 

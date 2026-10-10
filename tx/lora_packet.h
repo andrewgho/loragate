@@ -18,8 +18,9 @@ enum LoraPacketType : uint8_t {
   PKT_DOOR_CLOSE     = 3,
   PKT_ACK            = 4,
   PKT_DOOR_HELD_OPEN = 5,  // door still open at the left-open threshold
-                           // (PLAN.md "Wake behavior"); repeats on that same
-                           // interval for as long as the door stays open.
+                           // (PLAN.md "Wake behavior"); one-shot per open
+                           // episode, not repeated for as long as it stays
+                           // open — see tx/tx.ino's file header comment.
 };
 
 struct __attribute__((packed)) LoraPacket {

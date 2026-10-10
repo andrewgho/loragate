@@ -99,15 +99,18 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
   battery-voltage fields on the wire yet; those remain open items (see
   `PLAN.md`).
 - `tx/tx.ino` wakes on any reed-switch edge and reports the new door state.
-  While the door is open it also wakes every 300s
-  (`HELD_OPEN_CHECK_SECONDS`) to send `PKT_DOOR_HELD_OPEN` for as long as
-  it stays open. While closed, it wakes on an hourly
-  (`HEARTBEAT_INTERVAL_SECONDS`, configurable) timer and sends a heartbeat
-  if nothing else has happened by then — every event type counts equally
-  as "still alive", so the hourly timer is really just a floor on how long
-  the transmitter can go quiet, not a guarantee of a literal heartbeat
-  packet every hour. Deep sleep between wakes; see `PLAN.md`'s "Wake
-  behavior" for the state machine and its rapid-slam/bounce guard.
+  After an open edge, it wakes once more at 300s (`HELD_OPEN_CHECK_SECONDS`)
+  to re-verify against the real pin state and send `PKT_DOOR_HELD_OPEN` if
+  it's still open — a one-shot check, not repeated for as long as the door
+  stays open (that would cost real battery budget for a condition the first
+  check already reported). After that check (or immediately, if the door
+  closes first), it wakes on an hourly (`HEARTBEAT_INTERVAL_SECONDS`,
+  configurable) timer and sends a heartbeat if nothing else has happened by
+  then — every event type counts equally as "still alive", so the hourly
+  timer is really just a floor on how long the transmitter can go quiet,
+  not a guarantee of a literal heartbeat packet every hour. Deep sleep
+  between wakes; see `PLAN.md`'s "Wake behavior" for the state machine and
+  its rapid-slam/bounce guard.
 - Same send/ack/retry link layer as phase 1.
 - Still open: battery voltage, and whichever clock field ends up on the
   wire (see `PLAN.md`'s "Open items").
