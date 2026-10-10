@@ -235,10 +235,29 @@ void setup() {
                            LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin failed: %d (check lora_pins.h wiring)\n", state);
+    bool actual_open = read_debounced_state();
+    if (!have_committed_state) {
+      // Establish the baseline now, from the pin alone — it doesn't need
+      // the radio — even though we can't transmit anything this wake.
+      // Without this, a radio fault on this very first-ever wake would
+      // leave have_committed_state false and skip straight to sleeping
+      // below; a *later* wake, once radio.begin() finally succeeds, would
+      // then hit the "first boot" branch further down and silently adopt
+      // whatever the door happens to be doing *then* as "the starting
+      // state" — swallowing any real open/close that happened during
+      // however many failed retries came before that, with no event ever
+      // sent for it. Setting the baseline here means have_committed_state
+      // only ever reflects "has this device been through a real
+      // power-on," not "did the radio also happen to work that time", so
+      // the comparison below always has a true baseline to diff against.
+      door_open_committed = actual_open;
+      have_committed_state = true;
+      Serial.printf("initial door state: %s (radio not yet up)\n", actual_open ? "open" : "closed");
+    }
     // No point halting forever on a battery-powered device — sleep and
     // retry on the normal schedule instead, keyed off whatever the door
     // is actually doing right now.
-    enter_safe_deep_sleep(digitalRead(REED_PIN) == HIGH, HEARTBEAT_INTERVAL_SECONDS);
+    enter_safe_deep_sleep(actual_open, HEARTBEAT_INTERVAL_SECONDS);
   }
   Serial.println("radio init OK");
 
@@ -254,9 +273,13 @@ void setup() {
   bool actual_open = read_debounced_state();
 
   if (!have_committed_state) {
-    // First boot (power-on, not a sleep wake): nothing to compare against
+    // First boot (power-on, not a sleep wake) where radio.begin() happened
+    // to succeed on the very first attempt — nothing to compare against
     // yet, so just record the starting state silently, same as the old
-    // no-sleep tx.ino did.
+    // no-sleep tx.ino did. (If radio.begin() had instead failed on an
+    // earlier wake, the baseline was already established in the failure
+    // branch above — this branch only ever runs once, on whichever wake
+    // actually sets it.)
     Serial.printf("initial door state: %s\n", actual_open ? "open" : "closed");
     door_open_committed = actual_open;
     have_committed_state = true;

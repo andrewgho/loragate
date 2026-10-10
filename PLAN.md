@@ -60,6 +60,42 @@ real reed-switch edge (vs. just compiling) is still only done via the
 `-DDEBUG` delay/restart substitute (see `tx/Makefile`'s `make debug`), not
 yet against real deep sleep on battery power.
 
+## Never missing a state change
+
+The design goal here is stronger than "wake up reliably": a series of
+rapid transitions can be collapsed into just reporting the final state
+(see the rapid-slam guard above, and `report_door_transition()`'s
+catch-up loop for the equivalent case while a send is in flight), but the
+*net* state must never silently drift out of sync with what's been
+reported. Two things make that hold:
+
+- **A persisted "last reported" baseline** (`door_open_committed`,
+  `RTC_DATA_ATTR`, survives deep sleep) that every wake diffs the pin
+  against — not `esp_sleep_get_wakeup_cause()`, which is never consulted.
+  Every wake, for any reason, ends up asking the same question: "does the
+  real pin state match what we last told the world?" This sidesteps an
+  entire class of bugs where a wake gets misattributed to the wrong cause.
+- **A hard backstop on every path**: an open episode always gets a wake
+  within `HELD_OPEN_CHECK_SECONDS`, a closed/idle period within
+  `HEARTBEAT_INTERVAL_SECONDS`. Both of those wakes re-run the same diff.
+  So even in a race this doc hasn't anticipated, the worst case is added
+  latency (≤300s or ≤1h) before the mismatch is caught and reported, never
+  a transition that's lost for good.
+
+One real gap in this existed until it was caught by code review: `setup()`
+established `door_open_committed` (and `have_committed_state`) only
+*after* `radio.begin()` succeeded. If the radio failed on the very first
+wake ever (e.g. a flaky SPI connection — independent of whether power/RTC
+memory was fine) and only came up on some later wake, that later wake
+would hit the "first boot, nothing to compare against yet" branch and
+silently adopt whatever the door happened to be doing *then* as the
+starting baseline — with no event ever sent for a real transition that
+happened during the failed-radio window. Fixed by also establishing the
+baseline (from the pin alone, which needs no radio) inside the
+`radio.begin()` failure branch, so `have_committed_state` only ever means
+"this device has been through a real power-on," never "...and the radio
+also happened to work that same wake."
+
 ## Power budget
 
 Deep sleep leakage sources, with confidence noted — none of these are
