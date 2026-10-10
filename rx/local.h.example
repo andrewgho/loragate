@@ -5,6 +5,10 @@
 #define WIFI_SSID     "PicoNet"
 #define WIFI_PASSWORD "yonoquierovolar"
 
+// Hit once, the first time WiFi comes up after boot — lets a human watching
+// the monitoring server's logs confirm the receiver is alive.
+#define STARTUP_LOG_URL "http://192.168.1.12/log/door/gate/listening"
+
 // Placeholders, in order: seq (%lu), txno (%u).
 #define DOOR_OPEN_URL_TEMPLATE     "http://192.168.1.12/notify/door/gate/open?seq=%lu&txno=%u"
 #define DOOR_CLOSE_URL_TEMPLATE    "http://192.168.1.12/notify/door/gate/close?seq=%lu&txno=%u"

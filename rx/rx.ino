@@ -26,6 +26,8 @@ SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
 
+bool startup_log_sent = false;
+
 void wifi_connect() {
   if (WiFi.status() == WL_CONNECTED) return;
   Serial.printf("WiFi: connecting to %s...\n", WIFI_SSID);
@@ -34,6 +36,16 @@ void wifi_connect() {
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT_MS) delay(200);
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("WiFi: %s\n", WiFi.localIP().toString().c_str());
+    if (!startup_log_sent) {
+      // Fire-and-forget, right here rather than in setup(), so it fires
+      // whichever call happens to be the one that first gets us online —
+      // the explicit connect in setup(), or a later lazy reconnect from
+      // http_get(). http_get() calls wifi_connect() too; by the time it
+      // does, WiFi is already up and this block won't run again, so
+      // there's no recursion loop.
+      startup_log_sent = true;
+      http_get(STARTUP_LOG_URL);
+    }
   } else {
     Serial.println("WiFi: connect timed out; will retry on next request");
   }
