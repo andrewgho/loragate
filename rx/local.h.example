@@ -28,3 +28,9 @@
 // STALE_WINDOW_SECONDS. Placeholder (%lu) is how long it's actually been,
 // which can run past the threshold by up to one HOUSEKEEPING_INTERVAL_MS.
 #define TRANSMISSION_STALE_URL_TEMPLATE "http://192.168.1.12/log/door/gate/transmission_stale?seconds=%lu"
+
+// Raised on PKT_DIAGNOSTIC — the transmitter reporting an abnormal
+// boot/reset reason (see PLAN.md's "Reset diagnostics"). Placeholders, in
+// order: reason name (%s, from reset_reason_name()), raw reset-reason code
+// (%u), seq (%lu), txno (%u).
+#define DIAGNOSTIC_URL_TEMPLATE "http://192.168.1.12/log/door/gate/diagnostic/%s?code=%u&seq=%lu&txno=%u"

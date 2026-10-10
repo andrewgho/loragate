@@ -2,15 +2,18 @@
 //
 // Listens forever, acks every recognized packet, logs it, and forwards it to
 // the monitoring server: door open/close hit /notify/door/gate/{open,close},
-// heartbeats hit /log/door/gate/heartbeat. Every outgoing request also
-// carries localtime=<this node's epoch seconds> (see http_get()). No
-// retries or error handling on the HTTP side yet — a failed request just
-// gets logged and dropped.
+// heartbeats hit /log/door/gate/heartbeat, and an abnormal tx reset reason
+// (PKT_DIAGNOSTIC — see PLAN.md's "Reset diagnostics") hits
+// /log/door/gate/diagnostic/<reason>. Every outgoing request also carries
+// localtime=<this node's epoch seconds> (see http_get()). No retries or
+// error handling on the HTTP side yet — a failed request just gets logged
+// and dropped.
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <SPI.h>
 #include <RadioLib.h>
+#include <esp_system.h>
 #include "lora_pins.h"
 #include "lora_packet.h"
 #include "local.h"
@@ -177,6 +180,28 @@ void report_door_open_past(unsigned seconds, const LoraPacket *pkt) {
   http_get(url);
 }
 
+// Maps a PKT_DIAGNOSTIC packet's `info` byte (an esp_reset_reason_t cast to
+// uint8_t — see tx/tx.ino) to a short name for the log URL's path
+// component. Falls back to "unknown" for anything not listed here rather
+// than failing — the raw numeric code is also sent separately (see
+// DIAGNOSTIC_URL_TEMPLATE's code= param) so a future reset reason this
+// table doesn't know about yet is still visible, just not named.
+const char *reset_reason_name(uint8_t code) {
+  switch ((esp_reset_reason_t)code) {
+    case ESP_RST_POWERON:   return "poweron";
+    case ESP_RST_EXT:       return "ext";
+    case ESP_RST_SW:        return "sw";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:   return "int_wdt";
+    case ESP_RST_TASK_WDT:  return "task_wdt";
+    case ESP_RST_WDT:       return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_SDIO:      return "sdio";
+    default:                return "unknown";
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   uint32_t t0 = millis();
@@ -238,7 +263,8 @@ void handle_packet() {
   }
 
   if (pkt.type != PKT_HEARTBEAT && pkt.type != PKT_DOOR_OPEN &&
-      pkt.type != PKT_DOOR_CLOSE && pkt.type != PKT_DOOR_HELD_OPEN) {
+      pkt.type != PKT_DOOR_CLOSE && pkt.type != PKT_DOOR_HELD_OPEN &&
+      pkt.type != PKT_DIAGNOSTIC) {
     LOG("ignoring packet type=%d seq=%lu", pkt.type, (unsigned long)pkt.seq);
     return;
   }
@@ -282,6 +308,16 @@ void handle_packet() {
       door_is_open = true;  // defensive — should already be true
       report_door_open_past(TX_HELD_OPEN_SECONDS, &pkt);
       break;
+    case PKT_DIAGNOSTIC: {
+      const char *reason = reset_reason_name(pkt.info);
+      Serial.printf("RX diagnostic seq=%lu txno=%u info=%u (%s) rssi=%.1fdBm snr=%.1fdB\n",
+                    (unsigned long)pkt.seq, pkt.txno, pkt.info, reason, rssi, snr);
+      char url[256];
+      snprintf(url, sizeof(url), DIAGNOSTIC_URL_TEMPLATE, reason,
+               (unsigned)pkt.info, (unsigned long)pkt.seq, (unsigned)pkt.txno);
+      http_get(url);
+      break;
+    }
     default:
       break;  // unreachable — filtered above
   }
