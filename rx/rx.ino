@@ -2,8 +2,10 @@
 //
 // Listens forever, acks every recognized packet, logs it, and forwards it to
 // the monitoring server: door open/close hit /notify/door/gate/{open,close},
-// heartbeats hit /log/door/gate/heartbeat. No retries or error handling on
-// the HTTP side yet — a failed request just gets logged and dropped.
+// heartbeats hit /log/door/gate/heartbeat. Every outgoing request also
+// carries localtime=<this node's epoch seconds> (see http_get()). No
+// retries or error handling on the HTTP side yet — a failed request just
+// gets logged and dropped.
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -79,16 +81,21 @@ void run_housekeeping() {
   }
 }
 
-// Performs an HTTP GET against `url`, which must already be the fully
-// formed request URL. Reconnects WiFi first if needed; if that fails, logs
-// it and gives up — no retry on the HTTP side, a failed request just gets
-// logged and dropped.
-void http_get(const char *url) {
+// Performs an HTTP GET against `base_url` plus a localtime=<epoch seconds>
+// param reporting this node's current time (query string or bare path,
+// either is fine — the separator is chosen to fit). Reconnects WiFi first
+// if needed; if that fails, logs it and gives up — no retry on the HTTP
+// side, a failed request just gets logged and dropped.
+void http_get(const char *base_url) {
   wifi_connect();
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi: not connected; skipping request");
     return;
   }
+
+  char url[320];
+  const char *sep = strchr(base_url, '?') ? "&" : "?";
+  snprintf(url, sizeof(url), "%s%slocaltime=%ld", base_url, sep, (long)time(nullptr));
 
   Serial.printf("GET %s\n", url);
 
