@@ -121,3 +121,12 @@ up a fresh checkout.
   `HELD_OPEN_CHECK_SECONDS`; not itself on the wire, so this is a
   compile-time contract between the two sketches, not something enforced
   automatically).
+- **tx reports abnormal reset reasons via `PKT_DIAGNOSTIC`**, prompted by
+  a live-testing symptom (rapid door toggling occasionally dropped an
+  event and reset `next_seq` to 0 — only explainable by an actual
+  power-on/brownout reset, since `RTC_DATA_ATTR` is otherwise never
+  zeroed). `esp_reset_reason()` reports only the *immediately preceding*
+  boot's cause, so checking it needs no persisted "already reported"
+  state — see PLAN.md's "Reset diagnostics" for the full mechanism and
+  the hardware hypothesis (two TX current bursts landing close together
+  on a 1µF-capped MCP1700) it was added to investigate.

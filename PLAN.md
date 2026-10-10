@@ -108,6 +108,40 @@ Both this fix and the one-shot held-open behavior above are pinned down
 by `test/test_tx_wake_logic.cpp` as explicit regression cases — see
 README.md's "Testing" — rather than resting on manual review alone.
 
+## Reset diagnostics
+
+Prompted by a live-testing symptom on battery (3x fresh AA lithium
+primaries into the MCP1700, 1µF in/out caps): rapid open/close toggling
+occasionally dropped the close event entirely, and the *next* event pair
+showed `seq` reset to 0. `next_seq` is `RTC_DATA_ATTR` and nothing in
+`tx/tx.ino` ever sets it back to 0 itself, so a seq reset can only mean
+an actual power-on or brownout reset occurred — most likely from two LoRa
+TX current bursts (open immediately followed by close) landing close
+enough together that the battery/LDO hadn't recovered from the first
+before the second, browning out mid-transmission before the close event
+could complete or get acked.
+
+`setup()` now checks `esp_reset_reason()` right after the radio comes up
+and sends `PKT_DIAGNOSTIC` (carrying the raw reason code in the packet's
+new `info` byte) whenever it reads back anything other than the two
+routine causes: `ESP_RST_DEEPSLEEP` (every ordinary wake) and `ESP_RST_SW`
+(our own rapid-slam-guard restart, above). No extra persisted state is
+needed for this — `esp_reset_reason()` only ever reports the *immediately
+preceding* boot's cause, so it naturally reads back as one of the two
+routine values on the very next wake, meaning the diagnostic fires
+exactly once per actual anomaly. `rx/rx.ino` maps the code to a short
+name (`reset_reason_name()`) and logs it to
+`DIAGNOSTIC_URL_TEMPLATE` — see README.md's "Phase 2 protocol".
+
+This reports *that* an abnormal reset happened and *what kind*, generically
+(brownout, panic, watchdog, a repeat power-on, …) — it doesn't change
+anything about the hardware's actual susceptibility to the brownout in
+the first place. If it keeps happening, the next place to look is the
+power rail itself: 1µF is a fairly small reservoir for buffering a ~35mA
+transmit step landing twice in quick succession, and battery/holder
+contact quality under a fast double-draw is also worth checking — see
+"Power budget" below for the active-current figures this is stressing.
+
 ## Power budget
 
 Deep sleep leakage sources, with confidence noted — none of these are

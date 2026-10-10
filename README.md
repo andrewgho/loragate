@@ -125,10 +125,11 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
 
 ## Phase 2 protocol (tx/rx)
 
-- Packet type gains `PKT_DOOR_HELD_OPEN` alongside the phase-1
-  heartbeat/open/close/ack types (see `lora_packet.h`) — no clock or
-  battery-voltage fields on the wire yet; those remain open items (see
-  `PLAN.md`).
+- Packet type gains `PKT_DOOR_HELD_OPEN` and `PKT_DIAGNOSTIC` alongside
+  the phase-1 heartbeat/open/close/ack types (see `lora_packet.h`), and
+  the packet itself gains an `info` byte (reserved/0 except on
+  `PKT_DIAGNOSTIC`) — no clock or battery-voltage fields on the wire yet;
+  those remain open items (see `PLAN.md`).
 - `tx/tx.ino` wakes on any reed-switch edge and reports the new door state.
   After an open edge, it wakes once more at 300s (`HELD_OPEN_CHECK_SECONDS`)
   to re-verify against the real pin state and send `PKT_DOOR_HELD_OPEN` if
@@ -166,6 +167,12 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
   - Retries the WiFi connection on its own (`run_housekeeping()`) if it
     drops, independent of whether a packet or outgoing request happens to
     be pending.
+  - Raises `DIAGNOSTIC_URL_TEMPLATE` on receiving `PKT_DIAGNOSTIC` — the
+    transmitter reporting an abnormal boot/reset reason (not sent on
+    routine wakes). `reset_reason_name()` maps the packet's `info` byte to
+    a short name for the URL, falling back to `unknown` for anything not
+    in its table (the raw numeric code is sent too, so nothing's lost).
+    See `PLAN.md`'s "Reset diagnostics" for why this exists.
 
   All of the above (URLs, thresholds) are compile-time `#define`s — URLs
   and credentials in `rx/local.h` (gitignored, copy `local.h.example`),
