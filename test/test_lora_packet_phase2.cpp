@@ -22,10 +22,11 @@ int main() {
   // Enum values are part of the wire protocol between already-flashed
   // devices — pin them down so a future reorder doesn't silently break
   // compatibility.
-  static_assert(PKT_HEARTBEAT  == 1, "PKT_HEARTBEAT value changed");
-  static_assert(PKT_DOOR_OPEN  == 2, "PKT_DOOR_OPEN value changed");
-  static_assert(PKT_DOOR_CLOSE == 3, "PKT_DOOR_CLOSE value changed");
-  static_assert(PKT_ACK        == 4, "PKT_ACK value changed");
+  static_assert(PKT_HEARTBEAT      == 1, "PKT_HEARTBEAT value changed");
+  static_assert(PKT_DOOR_OPEN      == 2, "PKT_DOOR_OPEN value changed");
+  static_assert(PKT_DOOR_CLOSE     == 3, "PKT_DOOR_CLOSE value changed");
+  static_assert(PKT_ACK            == 4, "PKT_ACK value changed");
+  static_assert(PKT_DOOR_HELD_OPEN == 5, "PKT_DOOR_HELD_OPEN value changed");
 
   // Round-trip through a raw byte buffer, the way RadioLib actually moves
   // this struct over the air (transmit()/readData() take a uint8_t*).
@@ -38,6 +39,15 @@ int main() {
   assert(received.type == PKT_DOOR_OPEN);
   assert(received.seq  == 0xDEADBEEFu);
   assert(received.txno == 2);
+
+  // And the new held-open type, to the same depth as the others above.
+  LoraPacket held_open_sent = { PKT_DOOR_HELD_OPEN, 42u, 0 };
+  memcpy(buf, &held_open_sent, sizeof(buf));
+  LoraPacket held_open_received;
+  memcpy(&held_open_received, buf, sizeof(held_open_received));
+  assert(held_open_received.type == PKT_DOOR_HELD_OPEN);
+  assert(held_open_received.seq  == 42u);
+  assert(held_open_received.txno == 0);
 
   return 0;
 }

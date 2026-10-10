@@ -4,17 +4,22 @@
 // link-layer test bench for heartbeat + door open/close.
 //
 // Keep this file identical between tx/ and rx/ (Arduino sketches can't share
-// files across sketch directories).
+// files across sketch directories). Enum values are part of the wire
+// protocol between already-flashed devices — never renumber an existing
+// one, only append.
 
 #pragma once
 
 #include <stdint.h>
 
 enum LoraPacketType : uint8_t {
-  PKT_HEARTBEAT  = 1,
-  PKT_DOOR_OPEN  = 2,
-  PKT_DOOR_CLOSE = 3,
-  PKT_ACK        = 4,
+  PKT_HEARTBEAT      = 1,
+  PKT_DOOR_OPEN      = 2,
+  PKT_DOOR_CLOSE     = 3,
+  PKT_ACK            = 4,
+  PKT_DOOR_HELD_OPEN = 5,  // door still open at the left-open threshold
+                           // (PLAN.md "Wake behavior"); repeats on that same
+                           // interval for as long as the door stays open.
 };
 
 struct __attribute__((packed)) LoraPacket {
