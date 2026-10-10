@@ -125,8 +125,14 @@ up a fresh checkout.
   a live-testing symptom (rapid door toggling occasionally dropped an
   event and reset `next_seq` to 0 — only explainable by an actual
   power-on/brownout reset, since `RTC_DATA_ATTR` is otherwise never
-  zeroed). `esp_reset_reason()` reports only the *immediately preceding*
-  boot's cause, so checking it needs no persisted "already reported"
-  state — see PLAN.md's "Reset diagnostics" for the full mechanism and
-  the hardware hypothesis (two TX current bursts landing close together
-  on a 1µF-capped MCP1700) it was added to investigate.
+  zeroed). `esp_reset_reason()` is checked as early as possible, before
+  `radio.begin()` — live testing caught a real case where checking it
+  only in the success path meant the diagnostic for a genuine brownout
+  went missing entirely, because `radio.begin()` itself failed on that
+  wake and the *next* wake's reset reason read back as routine before
+  radio ever came up. `diagnostic_pending`/`pending_diagnostic_info`
+  (`RTC_DATA_ATTR`) now carry a detected anomaly across however many
+  wakes it takes for the radio to actually work. See PLAN.md's "Reset
+  diagnostics" for the full mechanism and the hardware hypothesis (two TX
+  current bursts landing close together on a 1µF-capped MCP1700) it was
+  added to investigate.

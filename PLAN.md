@@ -121,17 +121,29 @@ enough together that the battery/LDO hadn't recovered from the first
 before the second, browning out mid-transmission before the close event
 could complete or get acked.
 
-`setup()` now checks `esp_reset_reason()` right after the radio comes up
-and sends `PKT_DIAGNOSTIC` (carrying the raw reason code in the packet's
-new `info` byte) whenever it reads back anything other than the two
-routine causes: `ESP_RST_DEEPSLEEP` (every ordinary wake) and `ESP_RST_SW`
-(our own rapid-slam-guard restart, above). No extra persisted state is
-needed for this — `esp_reset_reason()` only ever reports the *immediately
-preceding* boot's cause, so it naturally reads back as one of the two
-routine values on the very next wake, meaning the diagnostic fires
-exactly once per actual anomaly. `rx/rx.ino` maps the code to a short
-name (`reset_reason_name()`) and logs it to
-`DIAGNOSTIC_URL_TEMPLATE` — see README.md's "Phase 2 protocol".
+`setup()` checks `esp_reset_reason()` as early as possible — before
+`radio.begin()`, since that read needs no radio — and sends
+`PKT_DIAGNOSTIC` (carrying the raw reason code in the packet's `info`
+byte) whenever it reads back anything other than the two routine causes:
+`ESP_RST_DEEPSLEEP` (every ordinary wake) and `ESP_RST_SW` (our own
+rapid-slam-guard restart, above). `rx/rx.ino` maps the code to a short
+name (`reset_reason_name()`) and logs it to `DIAGNOSTIC_URL_TEMPLATE` —
+see README.md's "Phase 2 protocol".
+
+Detecting it this early matters: live testing caught a real gap where the
+diagnostic went missing entirely. The wake immediately after an abnormal
+reset is exactly the one `radio.begin()` is least likely to succeed on
+(things are least settled right then) — if detection only happened in
+the success path, that wake would hit the `radio.begin()` failure branch
+and go straight back to a normal sleep with nothing ever checked or sent.
+The *next* wake's own `esp_reset_reason()` then reads back as the routine
+`ESP_RST_DEEPSLEEP` cause for *that* wake, and the anomaly is gone for
+good — exactly what was observed: no diagnostic, immediately followed by
+a clean door event on `seq=0`. Fixed with `diagnostic_pending` /
+`pending_diagnostic_info` (`RTC_DATA_ATTR`): detection latches them as
+soon as an abnormal reason is seen, independent of radio state; sending
+happens once the radio is confirmed working, however many wakes later
+that turns out to be.
 
 This reports *that* an abnormal reset happened and *what kind*, generically
 (brownout, panic, watchdog, a repeat power-on, …) — it doesn't change

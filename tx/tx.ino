@@ -27,10 +27,14 @@
 // setup() once, decides what (if anything) to transmit, and goes back to
 // sleep from inside it.
 //
-// Also reports a PKT_DIAGNOSTIC if the wake was caused by anything other
-// than a routine deep-sleep wake or our own deliberate restart — see
+// Also reports a PKT_DIAGNOSTIC if a wake was caused by anything other
+// than a routine deep-sleep wake or our own deliberate restart — detected
+// as early as possible (before radio.begin()) and carried in
+// diagnostic_pending across however many wakes it takes for the radio to
+// actually come up, since the wake right after an abnormal reset is
+// exactly the one radio.begin() is least likely to succeed on. See
 // PLAN.md's "Reset diagnostics" for why this exists (a live brownout
-// investigation) and why it needs no persisted state of its own.
+// investigation).
 
 #include <SPI.h>
 #include <RadioLib.h>
@@ -70,6 +74,17 @@ SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
 RTC_DATA_ATTR uint32_t next_seq = 0;
 RTC_DATA_ATTR DoorWakeState wake_state = {false, false, false};  // see door_wake_logic.h
+
+// Set as soon as an abnormal reset is detected (no radio needed for that),
+// cleared only once PKT_DIAGNOSTIC has actually gone out. Needed because
+// detection and the ability to send are on different wakes whenever
+// radio.begin() fails on the wake right after the reset itself — plausible
+// since that's exactly when things are least likely to be settled — in
+// which case esp_reset_reason() has already moved on to describing a
+// routine cause by the time a later wake's radio finally comes up. See
+// PLAN.md's "Reset diagnostics".
+RTC_DATA_ATTR bool diagnostic_pending = false;
+RTC_DATA_ATTR uint8_t pending_diagnostic_info = 0;
 
 volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
@@ -243,6 +258,20 @@ void setup() {
   pinMode(REED_PIN, INPUT);  // external 1M pull-up to 3V3 (WIRING.md) — no
                              // internal pull-up, matching the production circuit
 
+  // Detect an abnormal reset as early as possible — no radio needed for
+  // this read — so it's not missed if radio.begin() below happens to fail
+  // on this particular wake. esp_reset_reason() reports only the
+  // *immediately preceding* boot's cause: ESP_RST_DEEPSLEEP on every
+  // routine wake, ESP_RST_SW on our own rapid-slam-guard restarts
+  // (enter_safe_deep_sleep() below); anything else (ESP_RST_POWERON,
+  // ESP_RST_BROWNOUT, a watchdog, a panic, ...) is worth knowing about.
+  esp_reset_reason_t reset_reason = esp_reset_reason();
+  if (reset_reason != ESP_RST_DEEPSLEEP && reset_reason != ESP_RST_SW) {
+    Serial.printf("abnormal reset reason: %d\n", (int)reset_reason);
+    diagnostic_pending = true;
+    pending_diagnostic_info = (uint8_t)reset_reason;
+  }
+
   pinMode(LORA_RFSW, OUTPUT);
   digitalWrite(LORA_RFSW, HIGH);
 
@@ -287,18 +316,13 @@ void setup() {
     Serial.printf("setDio2AsRfSwitch failed: %d\n", state);
   }
 
-  // esp_reset_reason() reports only the *immediately preceding* boot's
-  // cause, so this needs no persisted "already reported" state: it's
-  // ESP_RST_DEEPSLEEP on every routine wake and ESP_RST_SW on our own
-  // rapid-slam-guard restarts (enter_safe_deep_sleep() above) — anything
-  // else (ESP_RST_POWERON, ESP_RST_BROWNOUT, a watchdog, a panic, ...) is
-  // worth knowing about, and naturally stops being reported on the very
-  // next wake once it reads back as one of the two routine causes. See
-  // PLAN.md's "Reset diagnostics".
-  esp_reset_reason_t reset_reason = esp_reset_reason();
-  if (reset_reason != ESP_RST_DEEPSLEEP && reset_reason != ESP_RST_SW) {
-    Serial.printf("abnormal reset reason: %d\n", (int)reset_reason);
-    send_event(PKT_DIAGNOSTIC, (uint8_t)reset_reason);
+  // Now that the radio is confirmed working, send whatever reset reason
+  // is still waiting to be reported — detected above on this wake, or
+  // carried over from an earlier one where radio.begin() failed before
+  // it could be sent.
+  if (diagnostic_pending) {
+    send_event(PKT_DIAGNOSTIC, pending_diagnostic_info);
+    diagnostic_pending = false;
   }
 
   bool actual_open = read_debounced_state();
