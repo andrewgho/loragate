@@ -1,13 +1,15 @@
-# Host-side tests for the link-layer packet formats — no ESP32/Arduino
-# toolchain needed, just a C++ compiler. Doesn't touch or replace testing the
-# actual firmware (radio/WiFi/reed-switch logic still only gets verified by
-# flashing real hardware); this just locks down the wire format both ends
-# depend on.
+# Host-side tests for logic that's been kept free of Arduino/radio/WiFi
+# dependencies specifically so it can run here — no ESP32 toolchain needed,
+# just a C++ compiler. Doesn't touch or replace testing the actual firmware
+# (hardware behavior — radio, deep sleep, WiFi, the reed switch itself —
+# still only gets verified by flashing real hardware): this locks down the
+# wire format both ends depend on (test_lora_packet_phase*) and tx's
+# wake-decision logic (test_tx_wake_logic, against tx/door_wake_logic.h).
 
 CXX      = c++
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror
 
-BINS = test_lora_packet_phase1 test_lora_packet_phase2
+BINS = test_lora_packet_phase1 test_lora_packet_phase2 test_tx_wake_logic
 
 test: $(BINS)
 	# lora_packet.h is duplicated across sketch directories (Arduino can't
@@ -17,6 +19,7 @@ test: $(BINS)
 	diff -q ../tx/lora_packet.h ../rx/lora_packet.h
 	./test_lora_packet_phase1
 	./test_lora_packet_phase2
+	./test_tx_wake_logic
 	@echo "all tests passed"
 
 test_lora_packet_phase1: test_lora_packet_phase1.cpp ../tx-test/lora_packet.h
@@ -24,6 +27,9 @@ test_lora_packet_phase1: test_lora_packet_phase1.cpp ../tx-test/lora_packet.h
 
 test_lora_packet_phase2: test_lora_packet_phase2.cpp ../tx/lora_packet.h
 	$(CXX) $(CXXFLAGS) -I../tx -o $@ test_lora_packet_phase2.cpp
+
+test_tx_wake_logic: test_tx_wake_logic.cpp ../tx/door_wake_logic.h
+	$(CXX) $(CXXFLAGS) -I../tx -o $@ test_tx_wake_logic.cpp
 
 clean:
 	rm -f $(BINS)
