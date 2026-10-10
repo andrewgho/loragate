@@ -14,54 +14,42 @@ numbers are re-derived against what we can actually confirm, not copied.
 
 ## Wake behavior
 
-Two wakeup sources armed before every sleep, matching whichever edge is
-next expected:
+**Implemented in `tx/tx.ino`.** Two wakeup sources armed before every
+sleep, matching whichever edge is next expected:
 
-- **Reed switch edge (D0/GPIO0, `esp_sleep_enable_ext0_wakeup`)** — armed
-  for the *opposite* of the current state: if the gate is open, wake on
-  LOW (closing); if closed, wake on HIGH (opening).
-- **RTC timer, only while the gate is open** — 300s (the "left open"
-  threshold). If it fires before the switch does, send the
-  `GATE_STILL_OPEN` event and re-arm for another 300s, still watching for
-  the close edge.
+- **Reed switch edge (D0/GPIO0, `esp_sleep_enable_ext1_wakeup`)** — armed
+  for the *opposite* of the current state: if the door is open, wake on
+  LOW (closing); if closed, wake on HIGH (opening). This was originally
+  planned as `esp_sleep_enable_ext0_wakeup()` (below), but the C6 doesn't
+  implement ext0 at all — its `soc_caps.h` has no
+  `SOC_PM_SUPPORT_EXT0_WAKEUP` — only ext1, which takes a GPIO bitmask
+  instead of a single pin number. For one pin that's just
+  `esp_sleep_enable_ext1_wakeup(1ULL << REED_PIN, mode)`; its doc comment
+  confirms each call fully replaces the previous ext1 config, so flipping
+  the wakeup level between wakes is safe without an explicit disable call
+  first.
+- **RTC timer, always armed** — 300s (`HELD_OPEN_CHECK_SECONDS`) while the
+  door is open, so a held-open door gets re-reported on that cadence for as
+  long as it stays open; `HEARTBEAT_INTERVAL_SECONDS` (1h default) while
+  closed, so *something* goes out at least that often even with no door
+  activity. Every event the firmware sends — open, close, held-open, or the
+  heartbeat itself — counts equally as "we're still alive" for this
+  purpose; there's no separate heartbeat clock to track across sleeps.
 
 ## Rapid-slam / bounce guard
 
-If the gate slams shut while the node is still transmitting the
-`GATE_OPEN` packet, the pin can flip before sleep is entered. Re-reading
+If the door slams shut while the node is still transmitting the
+door-open packet, the pin can flip before sleep is entered. Re-reading
 the pin immediately before committing to `esp_deep_sleep_start()`, and
 restarting instead of sleeping if it changed out from under us, avoids
 arming a wakeup edge that already happened (which would just sleep through
-it and miss the transition):
+it and miss the transition) — see `enter_safe_deep_sleep()` in
+`tx/tx.ino`, which implements this.
 
-```c
-// Design sketch — not yet implemented. REED_PIN is D0/GPIO0 (WIRING.md).
-void enter_safe_deep_sleep() {
-  delay(20);  // debounce settle
-  bool pin_state = digitalRead(REED_PIN);
-
-  if (pin_state == HIGH) {  // currently open — wake on close
-    esp_sleep_enable_ext0_wakeup(REED_PIN, 0);
-    esp_sleep_enable_timer_wakeup(300ULL * 1000000ULL);  // left-open threshold
-  } else {                  // currently closed — wake on open
-    esp_sleep_enable_ext0_wakeup(REED_PIN, 1);
-  }
-
-  if (digitalRead(REED_PIN) != pin_state) {
-    ESP.restart();  // state changed mid-setup; don't sleep through it
-  }
-
-  radio.sleep();  // explicit SX1262 sleep command — ~2.5µA vs standby's more
-  esp_deep_sleep_start();
-}
-```
-
-`esp_sleep_enable_ext0_wakeup()` is confirmed to work for deep sleep on the
-C6 via its RTC_IO peripheral (GPIO0-7) — not a given, since the C6's
-low-power subsystem is otherwise quite different from classic ESP32 (see
-the thermometer repo's notes on why its LP-core sensor sampling idea didn't
-pan out on this same chip). Still needs confirming empirically once this is
-actually flashed, same as everything else in this doc.
+Confirming `esp_sleep_enable_ext1_wakeup()` actually wakes the board on a
+real reed-switch edge (vs. just compiling) is still only done via the
+`-DDEBUG` delay/restart substitute (see `tx/Makefile`'s `make debug`), not
+yet against real deep sleep on battery power.
 
 ## Power budget
 
@@ -123,15 +111,17 @@ catch anything the table missed.
 
 ## Open items
 
-- Firmware for all of this doesn't exist yet — tx-test.ino is a fixed
-  10s-timer proof of concept, not event-driven. Phase 2 firmware needs: the
-  wake/sleep state machine above, the door-event packet types from
-  `README.md`'s phase-2 protocol section, battery voltage via `A1`/`VBAT`,
-  and (if added) DS3231 read-on-wake.
+- The wake/sleep state machine and door-event packet types above are
+  implemented in `tx/tx.ino`. Still missing from that firmware: battery
+  voltage via the ADS1115 (see below) and, if added, DS3231 read-on-wake.
 - Sleep current is unmeasured — everything in the power budget is a
   datasheet or estimated figure.
-- `esp_sleep_enable_ext0_wakeup()` on D0 needs confirming in practice, not
-  just via forum/doc reports.
+- `esp_sleep_enable_ext1_wakeup()` on D0 needs confirming against a real
+  reed-switch edge during actual deep sleep, not just the `-DDEBUG`
+  delay/restart substitute it's been exercised with so far.
+- The floating/unused-GPIO power-budget line item (`ANALOG`/input-disable
+  before sleep) isn't wired up in `tx/tx.ino` yet — the wake/sleep cycle
+  itself was the priority; this is a smaller follow-up power optimization.
 - If the DS3231 is added: confirm which of RTC-reported time vs. receiver
   receipt time actually ends up in the reported event, and whether it's
   worth the extra I2C traffic on every wake given receipt time was already

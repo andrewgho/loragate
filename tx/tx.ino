@@ -1,11 +1,20 @@
-// loragate tx — phase-2 door-sensor transmitter, no-sleep test bench.
+// loragate tx — phase-2 door-sensor transmitter, deep-sleep cycle.
 //
-// Sends a heartbeat packet on a fixed cadence, plus a door-open/door-close
-// packet whenever the reed switch (D0, WIRING.md) changes state. Every
-// packet shares one incrementing seq counter and goes through the same
-// send/wait-for-ack/retry dance as tx-test.ino. Deep sleep is intentionally
-// left out here so both ends can be watched live over serial; PLAN.md's
-// wake-on-reed-switch + deep-sleep behavior replaces this loop later.
+// Deep sleeps by default. Wakes on any reed-switch (D0) edge and reports
+// the new door state; while the door is open, also wakes every
+// HELD_OPEN_CHECK_SECONDS to report it's still open (PLAN.md's "Wake
+// behavior"). With the door closed, wakes on a HEARTBEAT_INTERVAL_SECONDS
+// timer if nothing else has happened by then and sends an explicit
+// heartbeat — but since every branch below already transmits something,
+// that's really just "transmit at least this often", not "transmit a
+// heartbeat specifically every hour".
+//
+// RTC_DATA_ATTR state survives deep sleep (reset to zero only on power-on)
+// so the seq counter and committed door state carry across wake cycles;
+// everything else (SPI, radio) is reinitialized from scratch each wake,
+// same as tx-test.ino. There is no persistent loop() here — each wake runs
+// setup() once, decides what (if anything) to transmit, and goes back to
+// sleep from inside it.
 
 #include <SPI.h>
 #include <RadioLib.h>
@@ -18,9 +27,15 @@
 #define REED_PIN              0
 #define DEBOUNCE_MS           50
 
-// How often to send a heartbeat regardless of door events. Independent of
-// the debounce/event handling below; tune freely while testing.
-#define HEARTBEAT_INTERVAL_MS 30000
+// How long the door can stay open before we proactively re-report it, and
+// how often we keep re-reporting for as long as it stays open after that.
+#define HELD_OPEN_CHECK_SECONDS    300
+
+// How often to transmit *something* when the door isn't doing that on its
+// own. Configurable; any door open/close/held-open event resets this clock
+// too, since it serves the same "transmitter is alive" purpose — see the
+// wake-cause handling in setup().
+#define HEARTBEAT_INTERVAL_SECONDS (60UL * 60UL)
 
 #define MAX_RETRIES         5
 #define ACK_TIMEOUT_MS      1500
@@ -35,10 +50,53 @@
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
-uint32_t next_seq = 0;
+RTC_DATA_ATTR uint32_t next_seq = 0;
+RTC_DATA_ATTR bool door_open_committed = false;   // last state we actually reported
+RTC_DATA_ATTR bool have_committed_state = false;  // false only before the first-ever report
 
 volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
+
+// Sleeps for `seconds`, waking early on a reed-switch edge (the opposite
+// level of `door_open`) or when the timer expires, whichever comes first.
+// Under -DDEBUG, substitutes a delay()+esp_restart() loop so USB/serial
+// stay up for monitoring (deep sleep powers down the USB peripheral) — same
+// convention as tx-test.ino.
+void enter_safe_deep_sleep(bool door_open, uint32_t seconds) __attribute__((noreturn));
+void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
+  // Re-read the pin right before committing to sleep: if it changed since
+  // we decided door_open, arming a wakeup edge for the *old* state would
+  // sleep through the transition that already happened (PLAN.md's
+  // rapid-slam guard). Restarting re-runs setup() against the pin's actual
+  // current state instead of sleeping through a missed edge.
+  delay(DEBOUNCE_MS);
+  if ((digitalRead(REED_PIN) == HIGH) != door_open) {
+    Serial.println("door moved while preparing to sleep; restarting to re-check");
+    Serial.flush();
+    ESP.restart();
+  }
+
+  Serial.printf("sleeping %lus (door %s)\n", (unsigned long)seconds, door_open ? "open" : "closed");
+  Serial.flush();
+
+#ifdef DEBUG
+  delay(seconds * 1000UL);
+  esp_restart();
+#else
+  radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
+
+  // The ESP32-C6 has no ext0 wakeup (SOC_PM_SUPPORT_EXT0_WAKEUP is unset in
+  // its soc_caps.h, unlike classic ESP32/S2/S3) — PLAN.md's original sketch
+  // assumed ext0 and was wrong. ext1 covers a single pin just as well; it
+  // takes a bitmask instead of a pin number, and (per its own doc comment)
+  // fully replaces the previous ext1 config on every call, which is exactly
+  // what's needed to flip the wakeup level between wakes.
+  esp_sleep_enable_ext1_wakeup(1ULL << REED_PIN,
+                                door_open ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+  esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
+  esp_deep_sleep_start();
+#endif
+}
 
 // Waits up to timeout_ms for an ACK matching expect_seq. Leaves the radio in
 // standby on return either way.
@@ -103,16 +161,9 @@ void send_event(LoraPacketType type) {
   }
 }
 
-bool door_open;            // last debounced, committed, and reported state
-bool raw_last;              // last raw pin reading, for debounce timing
-uint32_t debounce_t0;
-uint32_t last_heartbeat_ms;
-
 // Blocks until the pin has read the same value for DEBOUNCE_MS straight,
-// then returns that value. Used to get a trustworthy reading of "the door's
-// state right now" — as opposed to the non-blocking poll in loop(), which
-// exists only to catch the *first* edge without stalling the heartbeat
-// schedule.
+// then returns that value — a trustworthy "what is the door doing right
+// now", as opposed to the single raw read esp_sleep's wakeup cause implies.
 bool read_debounced_state() {
   bool raw = digitalRead(REED_PIN) == HIGH;
   uint32_t stable_since = millis();
@@ -128,25 +179,23 @@ bool read_debounced_state() {
   }
 }
 
-// Reports new_state, then immediately rechecks the actual pin state (no
+// Sends new_state, then immediately rechecks the actual pin state (no
 // delay/sleep) in case the door moved again while send_event() was blocked
 // in its ack/retry loop. Keeps reporting and rechecking until the reported
 // state matches reality — so however many transitions happened while we
 // weren't listening, we always converge on reporting the true end state,
 // never leaving the receiver holding a stale one.
 void report_door_transition(bool new_state) {
-  door_open = new_state;
-  raw_last = new_state;
-  Serial.println(door_open ? "door: open" : "door: close");
-  send_event(door_open ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
+  door_open_committed = new_state;
+  Serial.println(door_open_committed ? "door: open" : "door: close");
+  send_event(door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
 
   while (true) {
     bool actual = read_debounced_state();
-    if (actual == door_open) break;
+    if (actual == door_open_committed) break;
     Serial.println(actual ? "door: open (caught up)" : "door: close (caught up)");
-    door_open = actual;
-    raw_last = actual;
-    send_event(door_open ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
+    door_open_committed = actual;
+    send_event(door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
   }
 }
 
@@ -170,8 +219,10 @@ void setup() {
                            LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin failed: %d (check lora_pins.h wiring)\n", state);
-    Serial.println("halting");
-    while (true) delay(1000);
+    // No point halting forever on a battery-powered device — sleep and
+    // retry on the normal schedule instead, keyed off whatever the door
+    // is actually doing right now.
+    enter_safe_deep_sleep(digitalRead(REED_PIN) == HIGH, HEARTBEAT_INTERVAL_SECONDS);
   }
   Serial.println("radio init OK");
 
@@ -184,28 +235,33 @@ void setup() {
     Serial.printf("setDio2AsRfSwitch failed: %d\n", state);
   }
 
-  door_open = digitalRead(REED_PIN) == HIGH;
-  raw_last = door_open;
-  Serial.printf("initial door state: %s\n", door_open ? "open" : "closed");
+  bool actual_open = read_debounced_state();
 
-  last_heartbeat_ms = millis();
-}
-
-void loop() {
-  bool raw = digitalRead(REED_PIN) == HIGH;
-  if (raw != raw_last) {
-    raw_last = raw;
-    debounce_t0 = millis();
-  } else if (raw != door_open && millis() - debounce_t0 >= DEBOUNCE_MS) {
-    report_door_transition(raw);
-  }
-
-  if (millis() - last_heartbeat_ms >= HEARTBEAT_INTERVAL_MS) {
+  if (!have_committed_state) {
+    // First boot (power-on, not a sleep wake): nothing to compare against
+    // yet, so just record the starting state silently, same as the old
+    // no-sleep tx.ino did.
+    Serial.printf("initial door state: %s\n", actual_open ? "open" : "closed");
+    door_open_committed = actual_open;
+    have_committed_state = true;
+  } else if (actual_open != door_open_committed) {
+    // A reed-switch edge woke us (or we raced one on the way into the
+    // previous sleep) — report the transition.
+    report_door_transition(actual_open);
+  } else if (door_open_committed) {
+    // Door was already open and still is: HELD_OPEN_CHECK_SECONDS elapsed
+    // without a close edge.
+    Serial.println("door: still open");
+    send_event(PKT_DOOR_HELD_OPEN);
+  } else {
+    // Door was already closed and still is: HEARTBEAT_INTERVAL_SECONDS
+    // elapsed without anything else to report.
     Serial.println("heartbeat");
     send_event(PKT_HEARTBEAT);
-    last_heartbeat_ms = millis();
   }
 
-  delay(10);  // poll cadence — independent of HEARTBEAT_INTERVAL_MS so a
-              // door edge is never more than ~10ms + DEBOUNCE_MS late
+  enter_safe_deep_sleep(door_open_committed,
+                         door_open_committed ? HELD_OPEN_CHECK_SECONDS : HEARTBEAT_INTERVAL_SECONDS);
 }
+
+void loop() {}  // everything happens in setup(); each wake re-runs it from scratch

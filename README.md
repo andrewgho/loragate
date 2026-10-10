@@ -5,12 +5,14 @@ Wio-SX1262, reed switch, deep sleep) sends door open/close/heartbeat events
 to a mains-powered receiver (same hardware, always on), which forwards them
 to a WiFi-connected monitoring server.
 
-**Current status: phase 1 — link-layer proof of concept.** `tx-test/` sends a
-packet carrying just a sequence number and retries with backoff until it's
-acked or gives up; `rx-test/` listens forever, acks everything it receives,
-and reports the sequence number to a server over HTTP GET. Neither sketch
-knows about door events, client time, or battery voltage yet — that's phase
-2 (see "Planned protocol" below).
+**Current status: phase 2 in progress.** `tx-test/`/`rx-test/` are the
+phase-1 link-layer proof of concept — a packet carrying just a sequence
+number, retried with backoff until acked, reported to a server over HTTP
+GET — superseded by `tx/`/`rx/`'s real door-event protocol (see "Phase 2
+protocol" below). `tx/tx.ino` now deep-sleeps between events; `rx/rx.ino`
+still just forwards what it receives to the monitoring server with no
+further logic. Neither sketch has client time or battery voltage on the
+wire yet.
 
 ## Hardware
 
@@ -90,18 +92,22 @@ sketch directories — Arduino sketches can't share files across directories).
 exercise the transmitter's retry/backoff path without needing real radio
 interference; the receiver logs "ack drop (test)" whenever it withholds one.
 
-## Planned protocol (phase 2, not yet implemented)
+## Phase 2 protocol (tx/rx)
 
-- Packet carries: event type (door opened / door closed / door-open-too-long
-  / heartbeat), transmitter's clock (no RTC yet, so `millis()`-since-boot or
-  similar until one's added), battery voltage.
-- Door-open-too-long is transmitter-side logic: if the reed switch hasn't
-  reported closed within *n* seconds (default 300) of an open event, send
-  that event type.
-- Heartbeat sent periodically regardless of door events, carrying clock +
-  battery voltage + count of door events since the last heartbeat — lets the
-  receiver both monitor battery trend and alert if the transmitter goes
-  quiet for longer than expected.
-- Wake trigger becomes the reed switch (`esp_sleep_enable_ext0_wakeup` or
-  similar) instead of a fixed timer.
+- Packet type gains `PKT_DOOR_HELD_OPEN` alongside the phase-1
+  heartbeat/open/close/ack types (see `lora_packet.h`) — no clock or
+  battery-voltage fields on the wire yet; those remain open items (see
+  `PLAN.md`).
+- `tx/tx.ino` wakes on any reed-switch edge and reports the new door state.
+  While the door is open it also wakes every 300s
+  (`HELD_OPEN_CHECK_SECONDS`) to send `PKT_DOOR_HELD_OPEN` for as long as
+  it stays open. While closed, it wakes on an hourly
+  (`HEARTBEAT_INTERVAL_SECONDS`, configurable) timer and sends a heartbeat
+  if nothing else has happened by then — every event type counts equally
+  as "still alive", so the hourly timer is really just a floor on how long
+  the transmitter can go quiet, not a guarantee of a literal heartbeat
+  packet every hour. Deep sleep between wakes; see `PLAN.md`'s "Wake
+  behavior" for the state machine and its rapid-slam/bounce guard.
 - Same send/ack/retry link layer as phase 1.
+- Still open: battery voltage, and whichever clock field ends up on the
+  wire (see `PLAN.md`'s "Open items").
