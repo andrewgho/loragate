@@ -39,15 +39,17 @@ void wifi_connect() {
   }
 }
 
-void notify(const char *url_template, uint32_t seq, uint8_t txno) {
+// Performs an HTTP GET against `url`, which must already be the fully
+// formed request URL. Reconnects WiFi first if needed; if that fails, logs
+// it and gives up — no retry on the HTTP side, a failed request just gets
+// logged and dropped.
+void http_get(const char *url) {
   wifi_connect();
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi: not connected; skipping request");
     return;
   }
 
-  char url[256];
-  snprintf(url, sizeof(url), url_template, (unsigned long)seq, (unsigned)txno);
   Serial.printf("GET %s\n", url);
 
   HTTPClient http;
@@ -56,6 +58,14 @@ void notify(const char *url_template, uint32_t seq, uint8_t txno) {
   int code = http.GET();
   Serial.printf("Response: %d\n", code);
   http.end();
+}
+
+// Formats a proxied transmitter-event URL (carrying seq/txno placeholders,
+// in that order) and sends it.
+void notify_transmitter_event(const char *url_template, uint32_t seq, uint8_t txno) {
+  char url[256];
+  snprintf(url, sizeof(url), url_template, (unsigned long)seq, (unsigned)txno);
+  http_get(url);
 }
 
 void setup() {
@@ -147,5 +157,5 @@ void loop() {
   }
   radio.startReceive();  // transmit() leaves the radio in standby
 
-  notify(url_template, pkt.seq, pkt.txno);
+  notify_transmitter_event(url_template, pkt.seq, pkt.txno);
 }
