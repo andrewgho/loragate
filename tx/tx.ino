@@ -26,9 +26,15 @@
 // same as tx-test.ino. There is no persistent loop() here — each wake runs
 // setup() once, decides what (if anything) to transmit, and goes back to
 // sleep from inside it.
+//
+// Also reports a PKT_DIAGNOSTIC if the wake was caused by anything other
+// than a routine deep-sleep wake or our own deliberate restart — see
+// PLAN.md's "Reset diagnostics" for why this exists (a live brownout
+// investigation) and why it needs no persisted state of its own.
 
 #include <SPI.h>
 #include <RadioLib.h>
+#include <esp_system.h>
 #include "lora_pins.h"
 #include "lora_packet.h"
 #include "door_wake_logic.h"
@@ -142,15 +148,18 @@ bool wait_for_ack(uint32_t expect_seq, uint32_t timeout_ms) {
 }
 
 // Sends one packet of the given type on the shared seq counter, retrying
-// with backoff until acked or out of attempts.
-void send_event(LoraPacketType type) {
+// with backoff until acked or out of attempts. `info` rides along
+// unchanged on every attempt (unlike txno, which send_event() itself
+// overwrites with the attempt number each retry) — reserved/0 for every
+// type except PKT_DIAGNOSTIC, which uses it for a reset-reason code.
+void send_event(LoraPacketType type, uint8_t info) {
   uint32_t seq = next_seq++;
 
   bool acked = false;
   uint32_t backoff_ms = INITIAL_BACKOFF_MS;
   for (int attempt = 0; attempt <= MAX_RETRIES && !acked; attempt++) {
     Serial.printf("TX type=%d seq=%lu attempt=%d/%d\n", type, (unsigned long)seq, attempt, MAX_RETRIES);
-    LoraPacket pkt = { (uint8_t)type, seq, (uint8_t)attempt };
+    LoraPacket pkt = { (uint8_t)type, seq, (uint8_t)attempt, info };
     int st = radio.transmit((uint8_t *)&pkt, sizeof(pkt));
     if (st != RADIOLIB_ERR_NONE) {
       Serial.printf("transmit failed: %d\n", st);
@@ -201,14 +210,14 @@ bool read_debounced_state() {
 // stale one.
 void report_door_transition() {
   Serial.println(wake_state.door_open_committed ? "door: open" : "door: close");
-  send_event(wake_state.door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
+  send_event(wake_state.door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE, 0);
 
   while (true) {
     bool actual = read_debounced_state();
     if (actual == wake_state.door_open_committed) break;
     Serial.println(actual ? "door: open (caught up)" : "door: close (caught up)");
     wake_state.door_open_committed = actual;
-    send_event(wake_state.door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
+    send_event(wake_state.door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE, 0);
   }
 }
 
@@ -278,6 +287,20 @@ void setup() {
     Serial.printf("setDio2AsRfSwitch failed: %d\n", state);
   }
 
+  // esp_reset_reason() reports only the *immediately preceding* boot's
+  // cause, so this needs no persisted "already reported" state: it's
+  // ESP_RST_DEEPSLEEP on every routine wake and ESP_RST_SW on our own
+  // rapid-slam-guard restarts (enter_safe_deep_sleep() above) — anything
+  // else (ESP_RST_POWERON, ESP_RST_BROWNOUT, a watchdog, a panic, ...) is
+  // worth knowing about, and naturally stops being reported on the very
+  // next wake once it reads back as one of the two routine causes. See
+  // PLAN.md's "Reset diagnostics".
+  esp_reset_reason_t reset_reason = esp_reset_reason();
+  if (reset_reason != ESP_RST_DEEPSLEEP && reset_reason != ESP_RST_SW) {
+    Serial.printf("abnormal reset reason: %d\n", (int)reset_reason);
+    send_event(PKT_DIAGNOSTIC, (uint8_t)reset_reason);
+  }
+
   bool actual_open = read_debounced_state();
 
   // decide_wake_action() (door_wake_logic.h) is the pure decision — no
@@ -304,14 +327,14 @@ void setup() {
       // had its one-shot HELD_OPEN_CHECK_SECONDS check yet — this wake is
       // that check.
       Serial.println("door: still open (held-open check)");
-      send_event(PKT_DOOR_HELD_OPEN);
+      send_event(PKT_DOOR_HELD_OPEN, 0);
       break;
     case WAKE_ACTION_HEARTBEAT:
       // Either the door's closed, or it's open but already had its
       // one-shot check — either way, HEARTBEAT_INTERVAL_SECONDS elapsed
       // without anything else to report.
       Serial.println("heartbeat");
-      send_event(PKT_HEARTBEAT);
+      send_event(PKT_HEARTBEAT, 0);
       break;
   }
 

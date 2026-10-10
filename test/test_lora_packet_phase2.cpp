@@ -56,14 +56,14 @@ int main() {
 
   // PKT_DIAGNOSTIC is the one type where `info` carries real data (a reset
   // reason code) rather than sitting at its reserved 0.
-  LoraPacket diag_sent = { PKT_DIAGNOSTIC, 7u, 1, 3 };  // info=3 ~ ESP_RST_BROWNOUT
+  LoraPacket diag_sent = { PKT_DIAGNOSTIC, 7u, 1, 9 };  // info=9 ~ ESP_RST_BROWNOUT
   memcpy(buf, &diag_sent, sizeof(buf));
   LoraPacket diag_received;
   memcpy(&diag_received, buf, sizeof(diag_received));
   assert(diag_received.type == PKT_DIAGNOSTIC);
   assert(diag_received.seq  == 7u);
   assert(diag_received.txno == 1);
-  assert(diag_received.info == 3);
+  assert(diag_received.info == 9);
 
   return 0;
 }
