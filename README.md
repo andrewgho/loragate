@@ -5,14 +5,14 @@ Wio-SX1262, reed switch, deep sleep) sends door open/close/heartbeat events
 to a mains-powered receiver (same hardware, always on), which forwards them
 to a WiFi-connected monitoring server.
 
-**Current status: phase 2 in progress.** `tx-test/`/`rx-test/` are the
-phase-1 link-layer proof of concept — a packet carrying just a sequence
-number, retried with backoff until acked, reported to a server over HTTP
-GET — superseded by `tx/`/`rx/`'s real door-event protocol (see "Phase 2
-protocol" below). `tx/tx.ino` now deep-sleeps between events; `rx/rx.ino`
-still just forwards what it receives to the monitoring server with no
-further logic. Neither sketch has client time or battery voltage on the
-wire yet.
+**Current status: phase 2.** `tx-test/`/`rx-test/` are the phase-1
+link-layer proof of concept — a packet carrying just a sequence number,
+retried with backoff until acked, reported to a server over HTTP GET —
+superseded by `tx/`/`rx/`'s real door-event protocol (see "Phase 2
+protocol" below). `tx/tx.ino` deep-sleeps between events; `rx/rx.ino` adds
+its own door-held-open and transmitter-staleness detection, clock sync, and
+WiFi reconnect on top of forwarding what it receives. Neither sketch has
+client time or battery voltage on the wire yet — those stay open items.
 
 ## Hardware
 
@@ -111,3 +111,23 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
 - Same send/ack/retry link layer as phase 1.
 - Still open: battery voltage, and whichever clock field ends up on the
   wire (see `PLAN.md`'s "Open items").
+- `rx/rx.ino` forwards every recognized packet to the monitoring server
+  (`open`/`close`/`heartbeat`, each carrying `seq`/`txno`) and also:
+  - Hits `STARTUP_LOG_URL` once, the first time WiFi comes up after boot.
+  - Syncs its clock from `NTP_SERVER` on every WiFi (re)connect and once a
+    day after that, and includes `localtime=<epoch seconds>` on every
+    outgoing request (`http_get()`).
+  - Keeps its own idea of the door state: raises
+    `DOOR_OPEN_PAST_URL_TEMPLATE`'s `.../open_past/45` if a door-open
+    episode runs past `SHORT_OPEN_THRESHOLD_SECONDS` without a close, and
+    `.../open_past/300` on receiving the transmitter's own
+    `PKT_DOOR_HELD_OPEN` (carrying its `seq`/`txno` too).
+  - Raises `TRANSMISSION_STALE_URL_TEMPLATE` if nothing's been heard from
+    the transmitter (any packet type) in `STALE_WINDOW_SECONDS`.
+  - Retries the WiFi connection on its own (`run_housekeeping()`) if it
+    drops, independent of whether a packet or outgoing request happens to
+    be pending.
+
+  All of the above (URLs, thresholds) are compile-time `#define`s — URLs
+  and credentials in `rx/local.h` (gitignored, copy `local.h.example`),
+  behavior thresholds directly in `rx/rx.ino`.

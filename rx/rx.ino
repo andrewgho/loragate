@@ -102,6 +102,14 @@ void wifi_connect() {
 // Periodic checks that don't wait on a radio packet — called every loop()
 // iteration, throttled to HOUSEKEEPING_INTERVAL_MS internally.
 void run_housekeeping() {
+  // wifi_connect() already no-ops when already connected; this is what
+  // notices a drop and starts retrying even with no packet or outgoing
+  // request around to trigger the lazy reconnect in http_get().
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi: disconnected; attempting reconnect");
+    wifi_connect();
+  }
+
   if (WiFi.status() == WL_CONNECTED && millis() - last_ntp_sync_ms >= NTP_RESYNC_INTERVAL_MS) {
     sync_ntp();
   }
