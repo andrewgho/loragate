@@ -34,6 +34,11 @@
 // (the packet just says "still open", not "still open since when").
 #define TX_HELD_OPEN_SECONDS 300
 
+// How long we can go without hearing from the transmitter (any packet
+// type) before raising an alert — safely over two of its default hourly
+// heartbeat periods, so one missed/collided heartbeat alone won't trip it.
+#define STALE_WINDOW_SECONDS 7260
+
 #ifdef DEBUG
   #define LOG(fmt, ...) Serial.printf("[DBG] " fmt "\n", ##__VA_ARGS__)
 #else
@@ -53,6 +58,12 @@ uint32_t last_ntp_sync_ms = 0;  // 0 = never synced; see run_housekeeping()
 bool door_is_open = false;
 uint32_t door_opened_at_ms = 0;  // meaningful only while door_is_open
 bool short_open_alerted = false; // true once we've reported this open episode
+
+// Staleness tracking — last_rx_ms starts at setup()'s radio.startReceive()
+// (not "whenever the first packet arrives"), so silence from boot onward
+// counts too, not just silence after first contact.
+uint32_t last_rx_ms;
+bool stale_alerted = false;      // true once we've reported this silence
 
 // Requests a clock sync from NTP_SERVER. Passing it for all three of
 // configTime()'s server slots (instead of leaning on its pool.ntp.org /
@@ -99,6 +110,14 @@ void run_housekeeping() {
       millis() - door_opened_at_ms >= SHORT_OPEN_THRESHOLD_SECONDS * 1000UL) {
     short_open_alerted = true;
     report_door_open_past(SHORT_OPEN_THRESHOLD_SECONDS, nullptr);
+  }
+
+  uint32_t silence_s = (millis() - last_rx_ms) / 1000UL;
+  if (!stale_alerted && silence_s >= STALE_WINDOW_SECONDS) {
+    stale_alerted = true;
+    char url[160];
+    snprintf(url, sizeof(url), TRANSMISSION_STALE_URL_TEMPLATE, (unsigned long)silence_s);
+    http_get(url);
   }
 }
 
@@ -188,6 +207,7 @@ void setup() {
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("startReceive failed: %d\n", state);
   }
+  last_rx_ms = millis();  // staleness clock starts now, not on first packet
   Serial.println("listening...");
 }
 
@@ -206,6 +226,9 @@ void handle_packet() {
     LOG("ignoring packet type=%d seq=%lu", pkt.type, (unsigned long)pkt.seq);
     return;
   }
+
+  last_rx_ms = millis();
+  stale_alerted = false;
 
   // Ack every recognized packet so the transmitter stops retrying, before
   // doing anything slower (HTTP) below.

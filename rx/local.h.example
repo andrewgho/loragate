@@ -23,3 +23,8 @@
 // or TX_HELD_OPEN_SECONDS (the transmitter's) — the one placeholder (%u) is
 // that threshold, as the URL's last path component.
 #define DOOR_OPEN_PAST_URL_TEMPLATE "http://192.168.1.12/log/door/gate/open_past/%u"
+
+// Raised when nothing's been heard from the transmitter in
+// STALE_WINDOW_SECONDS. Placeholder (%lu) is how long it's actually been,
+// which can run past the threshold by up to one HOUSEKEEPING_INTERVAL_MS.
+#define TRANSMISSION_STALE_URL_TEMPLATE "http://192.168.1.12/log/door/gate/transmission_stale?seconds=%lu"
