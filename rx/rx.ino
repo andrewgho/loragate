@@ -68,6 +68,11 @@ bool short_open_alerted = false; // true once we've reported this open episode
 uint32_t last_rx_ms;
 bool stale_alerted = false;      // true once we've reported this silence
 
+// Any real epoch is far larger than this; time(nullptr) reads back as
+// just seconds-since-boot (near 0) until the first SNTP reply lands.
+#define NTP_SANE_EPOCH 1700000000UL  // 2023-11-14, comfortably in the past
+#define NTP_SYNC_WAIT_MS 2000        // bounded — see sync_ntp()
+
 // Requests a clock sync from NTP_SERVER. Passing it for all three of
 // configTime()'s server slots (instead of leaning on its pool.ntp.org /
 // time.nist.gov defaults for the other two) keeps this from ever depending
@@ -75,6 +80,17 @@ bool stale_alerted = false;      // true once we've reported this silence
 void sync_ntp() {
   Serial.printf("NTP: syncing from %s\n", NTP_SERVER);
   configTime(0, 0, NTP_SERVER, NTP_SERVER, NTP_SERVER);
+  // configTime() only *starts* the SNTP client — the reply arrives
+  // asynchronously, so a request that fires right after this (the startup
+  // log, on first connect) can read time(nullptr) before the first reply
+  // has landed. Observed in practice as localtime=2 (uptime, not a real
+  // epoch) on that very first request. Wait briefly for it to look synced;
+  // if the server doesn't answer in time, proceed anyway — localtime is
+  // already best-effort everywhere else in this file.
+  uint32_t t0 = millis();
+  while (time(nullptr) < NTP_SANE_EPOCH && millis() - t0 < NTP_SYNC_WAIT_MS) {
+    delay(50);
+  }
   last_ntp_sync_ms = millis();
 }
 
