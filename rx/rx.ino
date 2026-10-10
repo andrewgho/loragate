@@ -220,6 +220,14 @@ void setup() {
 }
 
 void handle_packet() {
+  // Reached only because the radio's IRQ actually fired — something
+  // matching our frequency/sync word came in, whether or not it goes on to
+  // decode as a packet we recognize below. That's already "we heard from
+  // the transmitter" for staleness purposes, so the clock resets here
+  // unconditionally, not only for the packet types we go on to act on.
+  last_rx_ms = millis();
+  stale_alerted = false;
+
   LoraPacket pkt;
   int st = radio.readData((uint8_t *)&pkt, sizeof(pkt));
   radio.startReceive();  // resume listening immediately, before doing anything slow
@@ -234,9 +242,6 @@ void handle_packet() {
     LOG("ignoring packet type=%d seq=%lu", pkt.type, (unsigned long)pkt.seq);
     return;
   }
-
-  last_rx_ms = millis();
-  stale_alerted = false;
 
   // Ack every recognized packet so the transmitter stops retrying, before
   // doing anything slower (HTTP) below.
