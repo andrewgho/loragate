@@ -9,6 +9,11 @@
 // the monitoring server's logs confirm the receiver is alive.
 #define STARTUP_LOG_URL "http://192.168.1.12/log/door/gate/listening"
 
+// NTP source for localtime= on every outgoing request — LAN-local, no
+// internet access needed. Synced on every WiFi (re)connect and once a day
+// after that (see NTP_RESYNC_INTERVAL_MS).
+#define NTP_SERVER "192.168.1.1"
+
 // Placeholders, in order: seq (%lu), txno (%u).
 #define DOOR_OPEN_URL_TEMPLATE     "http://192.168.1.12/notify/door/gate/open?seq=%lu&txno=%u"
 #define DOOR_CLOSE_URL_TEMPLATE    "http://192.168.1.12/notify/door/gate/close?seq=%lu&txno=%u"

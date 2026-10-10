@@ -15,6 +15,14 @@
 
 #define WIFI_TIMEOUT_MS 10000
 
+// How often to resync the clock against NTP_SERVER when nothing else
+// prompts a sync — see wifi_connect() for the "on every connect" half.
+#define NTP_RESYNC_INTERVAL_MS (24UL * 60UL * 60UL * 1000UL)
+
+// How often loop() runs its periodic (not packet-triggered) checks —
+// NTP resync due, held-open/staleness thresholds, WiFi health.
+#define HOUSEKEEPING_INTERVAL_MS 1000
+
 #ifdef DEBUG
   #define LOG(fmt, ...) Serial.printf("[DBG] " fmt "\n", ##__VA_ARGS__)
 #else
@@ -27,6 +35,17 @@ volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
 
 bool startup_log_sent = false;
+uint32_t last_ntp_sync_ms = 0;  // 0 = never synced; see run_housekeeping()
+
+// Requests a clock sync from NTP_SERVER. Passing it for all three of
+// configTime()'s server slots (instead of leaning on its pool.ntp.org /
+// time.nist.gov defaults for the other two) keeps this from ever depending
+// on internet access — every other address in this project is LAN-local too.
+void sync_ntp() {
+  Serial.printf("NTP: syncing from %s\n", NTP_SERVER);
+  configTime(0, 0, NTP_SERVER, NTP_SERVER, NTP_SERVER);
+  last_ntp_sync_ms = millis();
+}
 
 void wifi_connect() {
   if (WiFi.status() == WL_CONNECTED) return;
@@ -36,6 +55,7 @@ void wifi_connect() {
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT_MS) delay(200);
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("WiFi: %s\n", WiFi.localIP().toString().c_str());
+    sync_ntp();
     if (!startup_log_sent) {
       // Fire-and-forget, right here rather than in setup(), so it fires
       // whichever call happens to be the one that first gets us online —
@@ -48,6 +68,14 @@ void wifi_connect() {
     }
   } else {
     Serial.println("WiFi: connect timed out; will retry on next request");
+  }
+}
+
+// Periodic checks that don't wait on a radio packet — called every loop()
+// iteration, throttled to HOUSEKEEPING_INTERVAL_MS internally.
+void run_housekeeping() {
+  if (WiFi.status() == WL_CONNECTED && millis() - last_ntp_sync_ms >= NTP_RESYNC_INTERVAL_MS) {
+    sync_ntp();
   }
 }
 
@@ -121,13 +149,7 @@ void setup() {
   Serial.println("listening...");
 }
 
-void loop() {
-  if (!rx_flag) {
-    delay(5);
-    return;
-  }
-  rx_flag = false;
-
+void handle_packet() {
   LoraPacket pkt;
   int st = radio.readData((uint8_t *)&pkt, sizeof(pkt));
   radio.startReceive();  // resume listening immediately, before doing anything slow
@@ -170,4 +192,20 @@ void loop() {
   radio.startReceive();  // transmit() leaves the radio in standby
 
   notify_transmitter_event(url_template, pkt.seq, pkt.txno);
+}
+
+void loop() {
+  if (rx_flag) {
+    rx_flag = false;
+    handle_packet();
+  }
+
+  static uint32_t last_housekeeping_ms = 0;
+  uint32_t now = millis();
+  if (now - last_housekeeping_ms >= HOUSEKEEPING_INTERVAL_MS) {
+    last_housekeeping_ms = now;
+    run_housekeeping();
+  }
+
+  delay(5);
 }
