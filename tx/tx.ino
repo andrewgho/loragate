@@ -31,6 +31,7 @@
 #include <RadioLib.h>
 #include "lora_pins.h"
 #include "lora_packet.h"
+#include "door_wake_logic.h"
 
 // D0/GPIO0 per WIRING.md: external 1M pull-up to 3V3, contacts closed
 // (continuity, reads LOW) when the magnet is present (gate closed), open
@@ -62,10 +63,7 @@
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
 RTC_DATA_ATTR uint32_t next_seq = 0;
-RTC_DATA_ATTR bool door_open_committed = false;   // last state we actually reported
-RTC_DATA_ATTR bool have_committed_state = false;  // false only before the first-ever report
-RTC_DATA_ATTR bool held_open_checked = false;     // true once PKT_DOOR_HELD_OPEN has
-                                                   // gone out for the current open episode
+RTC_DATA_ATTR DoorWakeState wake_state = {false, false, false};  // see door_wake_logic.h
 
 volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
@@ -192,26 +190,25 @@ bool read_debounced_state() {
   }
 }
 
-// Sends new_state, then immediately rechecks the actual pin state (no
-// delay/sleep) in case the door moved again while send_event() was blocked
-// in its ack/retry loop. Keeps reporting and rechecking until the reported
-// state matches reality — so however many transitions happened while we
-// weren't listening, we always converge on reporting the true end state,
-// never leaving the receiver holding a stale one. Every transition here
-// starts a fresh open (or closed) episode, so held_open_checked resets too
-// — a new open edge gets its own HELD_OPEN_CHECK_SECONDS check.
-void report_door_transition(bool new_state) {
-  door_open_committed = new_state;
-  held_open_checked = false;
-  Serial.println(door_open_committed ? "door: open" : "door: close");
-  send_event(door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
+// Sends wake_state.door_open_committed's current value — already decided,
+// along with resetting held_open_checked for this new episode, by
+// decide_wake_action() before this is called — then immediately rechecks
+// the actual pin state (no delay/sleep) in case the door moved again while
+// send_event() was blocked in its ack/retry loop. Keeps reporting and
+// rechecking until the reported state matches reality — so however many
+// transitions happened while we weren't listening, we always converge on
+// reporting the true end state, never leaving the receiver holding a
+// stale one.
+void report_door_transition() {
+  Serial.println(wake_state.door_open_committed ? "door: open" : "door: close");
+  send_event(wake_state.door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
 
   while (true) {
     bool actual = read_debounced_state();
-    if (actual == door_open_committed) break;
+    if (actual == wake_state.door_open_committed) break;
     Serial.println(actual ? "door: open (caught up)" : "door: close (caught up)");
-    door_open_committed = actual;
-    send_event(door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
+    wake_state.door_open_committed = actual;
+    send_event(wake_state.door_open_committed ? PKT_DOOR_OPEN : PKT_DOOR_CLOSE);
   }
 }
 
@@ -236,22 +233,21 @@ void setup() {
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin failed: %d (check lora_pins.h wiring)\n", state);
     bool actual_open = read_debounced_state();
-    if (!have_committed_state) {
-      // Establish the baseline now, from the pin alone — it doesn't need
-      // the radio — even though we can't transmit anything this wake.
-      // Without this, a radio fault on this very first-ever wake would
-      // leave have_committed_state false and skip straight to sleeping
-      // below; a *later* wake, once radio.begin() finally succeeds, would
-      // then hit the "first boot" branch further down and silently adopt
-      // whatever the door happens to be doing *then* as "the starting
-      // state" — swallowing any real open/close that happened during
-      // however many failed retries came before that, with no event ever
-      // sent for it. Setting the baseline here means have_committed_state
-      // only ever reflects "has this device been through a real
-      // power-on," not "did the radio also happen to work that time", so
-      // the comparison below always has a true baseline to diff against.
-      door_open_committed = actual_open;
-      have_committed_state = true;
+    // Establish the baseline now, from the pin alone — it doesn't need the
+    // radio — even though we can't transmit anything this wake. Without
+    // this, a radio fault on this very first-ever wake would leave
+    // have_committed_state false and skip straight to sleeping below; a
+    // *later* wake, once radio.begin() finally succeeds, would then hit
+    // the "first boot" case further down and silently adopt whatever the
+    // door happens to be doing *then* as "the starting state" —
+    // swallowing any real open/close that happened during however many
+    // failed retries came before that, with no event ever sent for it.
+    // establish_baseline_if_needed() (not decide_wake_action(), which
+    // assumes a send is about to happen) means have_committed_state only
+    // ever reflects "has this device been through a real power-on," not
+    // "did the radio also happen to work that time" — see PLAN.md's
+    // "Never missing a state change".
+    if (establish_baseline_if_needed(wake_state, actual_open)) {
       Serial.printf("initial door state: %s (radio not yet up)\n", actual_open ? "open" : "closed");
     }
     // No point halting forever on a battery-powered device — sleep and
@@ -272,44 +268,47 @@ void setup() {
 
   bool actual_open = read_debounced_state();
 
-  if (!have_committed_state) {
-    // First boot (power-on, not a sleep wake) where radio.begin() happened
-    // to succeed on the very first attempt — nothing to compare against
-    // yet, so just record the starting state silently, same as the old
-    // no-sleep tx.ino did. (If radio.begin() had instead failed on an
-    // earlier wake, the baseline was already established in the failure
-    // branch above — this branch only ever runs once, on whichever wake
-    // actually sets it.)
-    Serial.printf("initial door state: %s\n", actual_open ? "open" : "closed");
-    door_open_committed = actual_open;
-    have_committed_state = true;
-  } else if (actual_open != door_open_committed) {
-    // A reed-switch edge woke us (or we raced one on the way into the
-    // previous sleep) — report the transition.
-    report_door_transition(actual_open);
-  } else if (door_open_committed && !held_open_checked) {
-    // Door was already open and still is, and this open episode hasn't had
-    // its one-shot HELD_OPEN_CHECK_SECONDS check yet — this wake is that
-    // check.
-    Serial.println("door: still open (held-open check)");
-    send_event(PKT_DOOR_HELD_OPEN);
-    held_open_checked = true;
-  } else {
-    // Either the door's closed, or it's open but already had its one-shot
-    // check — either way, HEARTBEAT_INTERVAL_SECONDS elapsed without
-    // anything else to report.
-    Serial.println("heartbeat");
-    send_event(PKT_HEARTBEAT);
+  // decide_wake_action() (door_wake_logic.h) is the pure decision — no
+  // Arduino/radio dependencies, host-tested in test/test_tx_wake_logic.cpp
+  // — of what this wake means; everything below is just carrying out
+  // whichever decision it already made and updated wake_state for.
+  switch (decide_wake_action(wake_state, actual_open)) {
+    case WAKE_ACTION_NONE:
+      // First boot (power-on, not a sleep wake) where radio.begin()
+      // happened to succeed on the very first attempt — nothing to
+      // compare against yet, so just record the starting state silently,
+      // same as the old no-sleep tx.ino did. (If radio.begin() had
+      // instead failed on an earlier wake, the baseline was already
+      // established in the failure branch above.)
+      Serial.printf("initial door state: %s\n", wake_state.door_open_committed ? "open" : "closed");
+      break;
+    case WAKE_ACTION_REPORT_TRANSITION:
+      // A reed-switch edge woke us (or we raced one on the way into the
+      // previous sleep) — report the transition.
+      report_door_transition();
+      break;
+    case WAKE_ACTION_HELD_OPEN_CHECK:
+      // Door was already open and still is, and this open episode hadn't
+      // had its one-shot HELD_OPEN_CHECK_SECONDS check yet — this wake is
+      // that check.
+      Serial.println("door: still open (held-open check)");
+      send_event(PKT_DOOR_HELD_OPEN);
+      break;
+    case WAKE_ACTION_HEARTBEAT:
+      // Either the door's closed, or it's open but already had its
+      // one-shot check — either way, HEARTBEAT_INTERVAL_SECONDS elapsed
+      // without anything else to report.
+      Serial.println("heartbeat");
+      send_event(PKT_HEARTBEAT);
+      break;
   }
 
   // Only the still-unchecked-open case needs the short HELD_OPEN_CHECK_SECONDS
   // wake; everything else (closed, or open-and-already-checked) uses the
   // long heartbeat interval instead, so a left-open door doesn't keep this
   // waking every 5 minutes for as long as it stays open.
-  uint32_t sleep_seconds = (door_open_committed && !held_open_checked)
-                                ? HELD_OPEN_CHECK_SECONDS
-                                : HEARTBEAT_INTERVAL_SECONDS;
-  enter_safe_deep_sleep(door_open_committed, sleep_seconds);
+  uint32_t sleep_seconds = decide_sleep_seconds(wake_state, HELD_OPEN_CHECK_SECONDS, HEARTBEAT_INTERVAL_SECONDS);
+  enter_safe_deep_sleep(wake_state.door_open_committed, sleep_seconds);
 }
 
 void loop() {}  // everything happens in setup(); each wake re-runs it from scratch
