@@ -7,8 +7,9 @@ SUBDIRS = tx-test rx-test tx rx
 compile:
 	$(foreach d,$(SUBDIRS),$(MAKE) -C $(d) compile &&) true
 
-# Host-side tests for the link-layer packet formats (see test/Makefile) —
-# no ESP32 toolchain or hardware needed either.
+# Host-side tests (see test/Makefile) for the link-layer wire formats and
+# tx's wake-decision logic (tx/door_wake_logic.h) — no ESP32 toolchain or
+# hardware needed either.
 test:
 	$(MAKE) -C test test
 

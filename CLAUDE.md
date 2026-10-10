@@ -1,0 +1,123 @@
+# loragate repo — AI context
+
+LoRa door-sensor gateway: a battery-powered transmitter (XIAO ESP32C6 +
+Wio-SX1262, reed switch, deep sleep) sends door open/close/heartbeat
+events to a mains-powered receiver (same hardware, always on), which
+forwards them to a WiFi-connected monitoring server. `README.md` is the
+user-facing overview; `PLAN.md` is the transmitter's design doc (wake
+behavior, power budget, open items); `WIRING.md` is the hardware build
+doc. This file is a quick-orientation index — the docs above have the
+actual detail, don't duplicate it here, just point at it.
+
+## Status
+
+Phase 2. Hardware is built and field-tested (radio link confirmed solid
+at ~1 block through trees). Firmware for the deep-sleep wake cycle (tx)
+and the receiver enhancements (rx) below is implemented and host-tested
+but **not yet flashed to real hardware** — `make compile` and `make
+test` pass; nothing has been confirmed against an actual reed-switch
+edge during real deep sleep yet. See PLAN.md's "Open items" for what's
+still unconfirmed, and WIRING.md's "Battery voltage monitoring" for what's
+designed but not wired into firmware yet (ADS1115 reading).
+
+## Sketches
+
+| Path | Role | Status |
+|---|---|---|
+| `tx-test/` | Transmitter, phase 1 | Link-layer proof of concept — fixed 10s timer, no sleep, no door events |
+| `rx-test/` | Receiver, phase 1 | Matching proof of concept — acks everything, reports seq/txno/rssi/snr |
+| `tx/` | Transmitter, phase 2 | Deep-sleep wake cycle on the real door-event protocol — implemented, not yet flashed |
+| `rx/` | Receiver, phase 2 | Forwards real events + its own held-open/staleness detection, NTP, WiFi reconnect — implemented, not yet flashed |
+
+Arduino sketches can't share files across directories, so `lora_pins.h`
+and `lora_packet.h` are duplicated between each phase's tx/rx pair —
+`make test` diffs them to catch drift (see "Testing" below).
+
+## Build system
+
+Repo-root `Makefile`: `make compile` (all four sketches, no upload),
+`make test` (see "Testing"), `make flash-tx`/`make flash-rx` (flash
+`tx-test`/`rx-test`), `make clean`. Each sketch directory also has its
+own Makefile (`make flash`, `make debug`, `make monitor`, `make clean`,
+`PORT=... make flash`) — `tx-test`'s and `tx`'s are identical, likewise
+`rx-test`'s and `rx`'s. `make debug` substitutes a `delay()` +
+`esp_restart()` loop for deep sleep so the USB port stays up for
+monitoring.
+
+Toolchain: `arduino-cli` + the ESP32 board package + `RadioLib` — same
+setup as the `thermometer` repo. It's installed on this Linux dev box
+too, so `make compile` and `make test` both work here; only flashing
+needs the macOS box with the hardware actually attached.
+
+`rx-test/local.h` and `rx/local.h` are both gitignored and differently
+shaped — `rx-test/local.h.example` has one URL template (4 placeholders:
+seq, txno, rssi, snr); `rx/local.h.example` has WiFi credentials plus
+several URL templates and the NTP server address (see README.md's "Phase
+2 protocol" for the full field list). Don't confuse the two when setting
+up a fresh checkout.
+
+## Testing
+
+- `test/test_lora_packet_phase1.cpp` / `test_lora_packet_phase2.cpp` —
+  wire format (struct layout, enum values, byte round-trip) for each
+  protocol phase, against `tx-test/lora_packet.h` / `tx/lora_packet.h`
+  respectively. `test/Makefile`'s `test` target also diffs each phase's
+  duplicated tx/rx copies against each other.
+- `test/test_tx_wake_logic.cpp` — `tx/door_wake_logic.h`'s pure
+  wake-decision logic (no Arduino/radio dependencies). Several cases are
+  explicit regression tests for bugs caught by manual review: the
+  held-open check firing once per episode rather than repeating, and the
+  `radio.begin()`-failure baseline-establishment bug (see PLAN.md's
+  "Never missing a state change"). Verified non-vacuous by deliberately
+  reintroducing both bugs in a scratch copy and confirming the
+  corresponding assertions fail.
+- None of this reaches hardware-in-the-loop behavior: whether
+  `esp_sleep_enable_ext1_wakeup()` actually wakes the board on a real
+  edge during real deep sleep, contact-bounce timing, RF range/retry, or
+  WiFi/HTTP against the real server. Only flashing confirms those.
+
+## Design decisions worth knowing before touching tx/tx.ino or rx/rx.ino
+
+- **ESP32-C6 has no `esp_sleep_enable_ext0_wakeup()`** — its `soc_caps.h`
+  has no `SOC_PM_SUPPORT_EXT0_WAKEUP`, unlike classic ESP32/S2/S3. PLAN.md's
+  original design sketch (adapted from an AI-authored first draft) assumed
+  ext0 and was wrong; `tx/tx.ino` uses `esp_sleep_enable_ext1_wakeup()`
+  instead (takes a GPIO bitmask, not a pin number; each call fully replaces
+  the previous config, which is relied on to flip the wakeup level between
+  wakes). Verified against the installed esp32-arduino-libs headers
+  directly, not a datasheet or forum post.
+- **The held-open check is one-shot per open episode, not repeating.**
+  Re-arming the 300s check for as long as the door stays open would mean
+  ~280 wakes/day for a door left open all day — real battery budget for a
+  condition the first check already reported. `held_open_checked`
+  (`DoorWakeState`) tracks this and resets on every transition.
+- **Every wake diffs the real pin against a persisted "last reported"
+  baseline, never trusting `esp_sleep_get_wakeup_cause()`.** This is the
+  core invariant behind "never miss a door state change" — see PLAN.md's
+  "Never missing a state change" for the full reasoning, including the
+  radio.begin()-failure edge case that required a real fix (baseline must
+  be established even when the radio is down, or a later successful wake
+  can silently adopt a stale state as "the starting point").
+- **tx's wake-decision logic is intentionally factored out of tx.ino**
+  into `door_wake_logic.h` — plain C++, no Arduino/radio includes — so it
+  can be unit-tested without the ESP32 toolchain. If you're touching the
+  decision of what a wake means or should send, that's the file to edit;
+  `tx.ino` should stay the thin I/O shell around it.
+- **rx's `run_housekeeping()` ticks every loop() iteration** (throttled
+  internally), not just when a radio packet arrives — this is what makes
+  the daily NTP resync, the 45s door-open-past check, the
+  transmission-staleness alert, and the proactive WiFi reconnect possible
+  without needing an incoming packet to trigger them.
+- **The transmission-staleness alert resets on *any* radio reception**,
+  not just ones that decode into a recognized packet type — reaching
+  `handle_packet()` at all means the radio's IRQ fired on our
+  frequency/sync word, which already counts as "heard from the
+  transmitter" even if the specific packet was corrupted or unrecognized.
+- **rx keeps its own idea of door state**, independent of what the
+  transmitter thinks: a local 45s-without-a-close alert
+  (`SHORT_OPEN_THRESHOLD_SECONDS`) runs on rx's own clock, separate from
+  (and faster than) the transmitter's 300s hardware-reverified check
+  (`TX_HELD_OPEN_SECONDS` on the rx side — must match tx's
+  `HELD_OPEN_CHECK_SECONDS`; not itself on the wire, so this is a
+  compile-time contract between the two sketches, not something enforced
+  automatically).

@@ -14,8 +14,14 @@ numbers are re-derived against what we can actually confirm, not copied.
 
 ## Wake behavior
 
-**Implemented in `tx/tx.ino`.** Two wakeup sources armed before every
-sleep, matching whichever edge is next expected:
+**Implemented in `tx/tx.ino`** — with the decision of what each wake
+means and should send factored out into `tx/door_wake_logic.h`, kept free
+of Arduino/radio dependencies specifically so it's unit-tested
+(`test/test_tx_wake_logic.cpp`, see README.md's "Testing") independent of
+any hardware. `tx.ino`'s `setup()` is the I/O shell: reads the pin, calls
+into that logic, and carries out whichever action it decided. Two wakeup
+sources armed before every sleep, matching whichever edge is next
+expected:
 
 - **Reed switch edge (D0/GPIO0, `esp_sleep_enable_ext1_wakeup`)** — armed
   for the *opposite* of the current state: if the door is open, wake on
@@ -69,12 +75,13 @@ catch-up loop for the equivalent case while a send is in flight), but the
 *net* state must never silently drift out of sync with what's been
 reported. Two things make that hold:
 
-- **A persisted "last reported" baseline** (`door_open_committed`,
-  `RTC_DATA_ATTR`, survives deep sleep) that every wake diffs the pin
-  against — not `esp_sleep_get_wakeup_cause()`, which is never consulted.
-  Every wake, for any reason, ends up asking the same question: "does the
-  real pin state match what we last told the world?" This sidesteps an
-  entire class of bugs where a wake gets misattributed to the wrong cause.
+- **A persisted "last reported" baseline** (`wake_state.door_open_committed`
+  in `door_wake_logic.h`'s `DoorWakeState`, held in an `RTC_DATA_ATTR`
+  global so it survives deep sleep) that every wake diffs the pin against
+  — not `esp_sleep_get_wakeup_cause()`, which is never consulted. Every
+  wake, for any reason, ends up asking the same question: "does the real
+  pin state match what we last told the world?" This sidesteps an entire
+  class of bugs where a wake gets misattributed to the wrong cause.
 - **A hard backstop on every path**: an open episode always gets a wake
   within `HELD_OPEN_CHECK_SECONDS`, a closed/idle period within
   `HEARTBEAT_INTERVAL_SECONDS`. Both of those wakes re-run the same diff.
@@ -92,9 +99,14 @@ silently adopt whatever the door happened to be doing *then* as the
 starting baseline — with no event ever sent for a real transition that
 happened during the failed-radio window. Fixed by also establishing the
 baseline (from the pin alone, which needs no radio) inside the
-`radio.begin()` failure branch, so `have_committed_state` only ever means
-"this device has been through a real power-on," never "...and the radio
-also happened to work that same wake."
+`radio.begin()` failure branch, via `establish_baseline_if_needed()`, so
+`have_committed_state` only ever means "this device has been through a
+real power-on," never "...and the radio also happened to work that same
+wake."
+
+Both this fix and the one-shot held-open behavior above are pinned down
+by `test/test_tx_wake_logic.cpp` as explicit regression cases — see
+README.md's "Testing" — rather than resting on manual review alone.
 
 ## Power budget
 

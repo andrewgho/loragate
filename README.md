@@ -47,14 +47,15 @@ Additionally needed here:
 arduino-cli lib install RadioLib
 ```
 
-Flashing happens from macOS (this dev box has no `arduino-cli` installed —
-it's Linux-only for editing/building the source). `make flash` from either
-sketch directory, or `make flash-tx` / `make flash-rx` from the repo root.
+`arduino-cli` is installed on this Linux dev box too, so `make compile`
+and `make test` both work here — only flashing needs the macOS box with
+the hardware actually attached. `make flash` from either sketch
+directory, or `make flash-tx` / `make flash-rx` from the repo root.
 
 ## Build system
 
-Each sketch directory (`tx-test/`, `rx-test/`) has its own Makefile,
-following the `thermometer` repo's conventions:
+Each sketch directory (`tx-test/`, `rx-test/`, `tx/`, `rx/`) has its own
+Makefile, following the `thermometer` repo's conventions:
 
 - `make flash` — compile + upload
 - `make debug` — compile with `-DDEBUG` + upload + open serial monitor.
@@ -63,6 +64,10 @@ following the `thermometer` repo's conventions:
 - `make monitor` — open serial monitor without reflashing
 - `make clean` — remove build artifacts
 - `PORT=/dev/cu.usbmodemXXXX make flash` — override the default port
+
+The repo-root `Makefile` adds `make compile` (compile all four sketches,
+no upload) and `make flash-tx`/`make flash-rx` (flash `tx-test`/`rx-test`
+specifically — see "Testing" below for `make test`).
 
 `rx-test/` additionally needs `local.h` (gitignored) for WiFi credentials
 and the report URL template — copy `local.h.example` and fill it in:
@@ -75,6 +80,32 @@ and the report URL template — copy `local.h.example` and fill it in:
 
 If you already have a `local.h` from before, it needs updating too — the
 template now takes four placeholders, not one (see order below).
+
+`rx/` needs its own, differently-shaped `local.h` — see "Phase 2 protocol"
+below for its fields. `tx/` needs no `local.h` (no WiFi).
+
+## Testing
+
+- `make compile` (repo root) — compiles all four sketches against the
+  installed ESP32 core + RadioLib, no upload or hardware needed. Catches
+  anything that doesn't build; doesn't exercise any logic.
+- `make test` (repo root, or `test/`) — host-side tests, no ESP32 toolchain
+  needed at all, just a C++ compiler:
+  - `test_lora_packet_phase1`/`test_lora_packet_phase2` — lock down the
+    wire format (struct layout, enum values, byte round-trip) for both
+    protocol phases, and diff each phase's duplicated `lora_packet.h`
+    copies against each other so they can't silently drift apart.
+  - `test_tx_wake_logic` — covers `tx/door_wake_logic.h`'s pure
+    wake-decision logic (see "Phase 2 protocol" below), including
+    regression cases for bugs caught by manual review before this file
+    existed.
+
+What neither of those reaches, and can only be confirmed by flashing real
+hardware: whether `esp_sleep_enable_ext1_wakeup()` actually wakes the
+board on a real reed-switch edge during real deep sleep, contact-bounce
+timing against `DEBOUNCE_MS`, RF range/retry behavior, and WiFi/HTTP
+against the real monitoring server. See `PLAN.md`'s "Wake behavior" and
+"Open items".
 
 ## Link-layer protocol (phase 1)
 
@@ -110,7 +141,12 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
   timer is really just a floor on how long the transmitter can go quiet,
   not a guarantee of a literal heartbeat packet every hour. Deep sleep
   between wakes; see `PLAN.md`'s "Wake behavior" for the state machine and
-  its rapid-slam/bounce guard.
+  its rapid-slam/bounce guard. The decision itself — what a given wake
+  means and what it should send — lives in `tx/door_wake_logic.h`, kept
+  free of Arduino/radio dependencies so it's covered by
+  `test_tx_wake_logic` (see "Testing" above) independent of any hardware;
+  `tx/tx.ino`'s `setup()` is just the I/O shell that reads the pin, calls
+  into it, and carries out whatever it decides.
 - Same send/ack/retry link layer as phase 1.
 - Still open: battery voltage, and whichever clock field ends up on the
   wire (see `PLAN.md`'s "Open items").
