@@ -265,7 +265,14 @@ void setup() {
   // routine wake, ESP_RST_SW on our own rapid-slam-guard restarts
   // (enter_safe_deep_sleep() below); anything else (ESP_RST_POWERON,
   // ESP_RST_BROWNOUT, a watchdog, a panic, ...) is worth knowing about.
+  //
+  // Logged unconditionally (not just when abnormal) so a live serial
+  // monitor shows the reset reason on every boot — needed to tell apart
+  // "the reason just wasn't abnormal this time" from "something's
+  // corrupting RTC memory without going through a reset esp_reset_reason()
+  // can see at all", which no amount of checking this value can catch.
   esp_reset_reason_t reset_reason = esp_reset_reason();
+  Serial.printf("reset reason: %d, diagnostic_pending=%d\n", (int)reset_reason, diagnostic_pending);
   if (reset_reason != ESP_RST_DEEPSLEEP && reset_reason != ESP_RST_SW) {
     Serial.printf("abnormal reset reason: %d\n", (int)reset_reason);
     diagnostic_pending = true;
