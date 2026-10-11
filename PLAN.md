@@ -265,39 +265,54 @@ smaller and currently unmeasured — worth confirming with an actual
 current-vs-time trace once hardware is available, not assumed negligible
 by default now that this table has already been wrong about that once.
 
-At 20 transitions/day (10 open + 10 close) and ~2,100-2,250mAh realistically
-extractable from the L91 pack (nominal 3,000mAh derated for cold-weather
-internal resistance and brownout headroom — see the L91 datasheet linked in
-WIRING.md). Series cells don't add capacity, only voltage, so the 3-cell
-pack's mAh figure is the same as a 2-cell pack's would have been — the LDO
-regulator draws roughly the same current from its input as it delivers at
-its output regardless of input voltage, so the third cell costs nothing
-here, per WIRING.md's "Power" section. Figured for both LDO options, since
-neither is more "correct" than the other until Option A has a working unit
-to measure:
+At up to ~54 radio events/day — a deliberately conservative sum, not
+netting out any overlap between the pieces below — and ~2,100-2,250mAh
+realistically extractable from the L91 pack (nominal 3,000mAh derated for
+cold-weather internal resistance and brownout headroom — see the L91
+datasheet linked in WIRING.md). That event count is 20 door transitions/day
+(10 open + 10 close, as before) plus two pieces "Wake behavior" describes
+that this table previously left out entirely: up to 24 hourly
+heartbeats/day (the floor that applies even on a day with zero door
+activity) and up to 10 held-open checks/day (one per open episode that
+runs past `HELD_OPEN_CHECK_SECONDS` — an upper bound; many opens close
+well before that and send none). Series cells don't add capacity, only
+voltage, so the 3-cell pack's mAh figure is the same as a 2-cell pack's
+would have been — the LDO regulator draws roughly the same current from
+its input as it delivers at its output regardless of input voltage, so
+the third cell costs nothing here, per WIRING.md's "Power" section.
+Figured for both LDO options, since neither is more "correct" than the
+other until Option A has a working unit to measure:
 
 ```
 Option A (TPS7A0233):
 sleep:  0.039mA * 24h                    ≈ 0.936 mAh/day
-active: 20 * 0.120s * 125mA / 3600       ≈ 0.083 mAh/day
-total                                    ≈ 1.019 mAh/day
-2,100 mAh / (1.019 mAh/day * 365)        ≈ 5.6 years
+active: 54 * 0.120s * 125mA / 3600       ≈ 0.225 mAh/day
+total                                    ≈ 1.161 mAh/day
+2,100 mAh / (1.161 mAh/day * 365)        ≈ 5.0 years
 
 Option B (MCP1700, typical IQ — as currently built):
 sleep:  0.0412mA * 24h                   ≈ 0.989 mAh/day
-active: 20 * 0.120s * 125mA / 3600       ≈ 0.083 mAh/day
-total                                    ≈ 1.072 mAh/day
-2,100 mAh / (1.072 mAh/day * 365)        ≈ 5.4 years
+active: 54 * 0.120s * 125mA / 3600       ≈ 0.225 mAh/day
+total                                    ≈ 1.214 mAh/day
+2,100 mAh / (1.214 mAh/day * 365)        ≈ 4.7 years
 ```
 
 Option B at its 4µA worst-case (not just 1.6µA typical) comes out to
-roughly 5.1 years instead of 5.4 — still comfortably clears the "2+ years
+roughly 4.5 years instead of 4.7 — still comfortably clears the "2+ years
 would be satisfying in practice" bar this project is actually targeting,
 which matters more here than the gap between the two options. (Using the
 125mA module-measured figure here, not the 118mA chip-datasheet one —
 slightly more conservative, and it's what the actual installed part is
 rated for.) Dropping to a lower `LORA_TX_POWER_DBM` would shrink the
 active line further still, on top of easing the brownout risk below.
+
+Not modeled here, for lack of any measured data to base a number on:
+`send_event()` retries up to 5 times with backoff if an ack doesn't come
+back, and every figure above assumes a single 120ms burst per event. Live
+field logs show `txno=0` on nearly every send at the tested range, so
+retries look rare in practice, but a worst case of constant retries would
+cost meaningfully more than this table assumes — worth a measured
+current-vs-time trace someday, same as the CPU-awake-time caveat above.
 
 Treat this as optimistic-of-the-corrected-numbers, not a promise — the
 individual leakage line items are still estimates. Worth an actual current
