@@ -127,11 +127,19 @@ up a fresh checkout.
   the daily NTP resync, the 45s door-open-past check, the
   transmission-staleness alert, and the proactive WiFi reconnect possible
   without needing an incoming packet to trigger them.
-- **The transmission-staleness alert resets on *any* radio reception**,
-  not just ones that decode into a recognized packet type — reaching
-  `handle_packet()` at all means the radio's IRQ fired on our
-  frequency/sync word, which already counts as "heard from the
-  transmitter" even if the specific packet was corrupted or unrecognized.
+- **The transmission-staleness alert's silence *clock* resets on any
+  radio reception, but its one-shot alert *latch* only clears on a
+  recognized packet type.** A CRC-failed or unrecognized reception means
+  the radio's IRQ matched our frequency/sync word, but that's not
+  reliable evidence it came from our own transmitter rather than ambient
+  RF noise or interference — caught live: CRC failures logged while tx
+  was confirmed powered off overnight, right after a staleness alert had
+  already fired. If a corrupted reception could clear the latch too, a
+  noise event landing after a real outage would silently suppress every
+  alert after the first for as long as noise kept showing up, even while
+  the transmitter stayed genuinely dead. Letting the silence clock itself
+  reset on any reception is still fine — once a real packet arrives, it
+  resets both together anyway.
 - **rx keeps its own idea of door state**, independent of what the
   transmitter thinks: a local 45s-without-a-close alert
   (`SHORT_OPEN_THRESHOLD_SECONDS`) runs on rx's own clock, separate from

@@ -282,11 +282,17 @@ void setup() {
 void handle_packet() {
   // Reached only because the radio's IRQ actually fired — something
   // matching our frequency/sync word came in, whether or not it goes on to
-  // decode as a packet we recognize below. That's already "we heard from
-  // the transmitter" for staleness purposes, so the clock resets here
-  // unconditionally, not only for the packet types we go on to act on.
+  // decode as a packet we recognize below. That's weak evidence at best
+  // (a CRC-failed reception carries no reliable information about
+  // whether it came from our tx or from ambient RF noise/interference —
+  // caught live: CRC failures logged while tx was confirmed powered off
+  // overnight), so only the silence *clock* resets unconditionally here;
+  // the one-shot alert *latch* (stale_alerted) only clears once a packet
+  // actually decodes as one of our known types, below — otherwise a
+  // noise-triggered CRC failure after a real outage could silently
+  // suppress every alert after the first for as long as noise keeps
+  // showing up, even while the transmitter stays genuinely dead.
   last_rx_ms = millis();
-  stale_alerted = false;
 
   LoraPacket pkt;
   int st = radio.readData((uint8_t *)&pkt, sizeof(pkt));
@@ -303,6 +309,10 @@ void handle_packet() {
     LOG("ignoring packet type=%d seq=%lu", pkt.type, (unsigned long)pkt.seq);
     return;
   }
+
+  // A recognized type, even a duplicate retry (still real evidence tx is
+  // alive) — safe to re-arm the alert latch now.
+  stale_alerted = false;
 
   // Ack every recognized packet so the transmitter stops retrying, before
   // doing anything slower (HTTP) below.
