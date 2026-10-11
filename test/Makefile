@@ -3,13 +3,15 @@
 # just a C++ compiler. Doesn't touch or replace testing the actual firmware
 # (hardware behavior — radio, deep sleep, WiFi, the reed switch itself —
 # still only gets verified by flashing real hardware): this locks down the
-# wire format both ends depend on (test_lora_packet_phase*) and tx's
-# wake-decision logic (test_tx_wake_logic, against tx/door_wake_logic.h).
+# wire format both ends depend on (test_lora_packet_phase*), tx's
+# wake-decision logic (test_tx_wake_logic, against tx/door_wake_logic.h),
+# and tx's RTC-persistence checksum (test_rtc_checksum, against
+# tx/rtc_checksum.h).
 
 CXX      = c++
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror
 
-BINS = test_lora_packet_phase1 test_lora_packet_phase2 test_tx_wake_logic
+BINS = test_lora_packet_phase1 test_lora_packet_phase2 test_tx_wake_logic test_rtc_checksum
 
 test: $(BINS)
 	# lora_packet.h is duplicated across sketch directories (Arduino can't
@@ -20,6 +22,7 @@ test: $(BINS)
 	./test_lora_packet_phase1
 	./test_lora_packet_phase2
 	./test_tx_wake_logic
+	./test_rtc_checksum
 	@echo "all tests passed"
 
 test_lora_packet_phase1: test_lora_packet_phase1.cpp ../tx-test/lora_packet.h
@@ -30,6 +33,9 @@ test_lora_packet_phase2: test_lora_packet_phase2.cpp ../tx/lora_packet.h
 
 test_tx_wake_logic: test_tx_wake_logic.cpp ../tx/door_wake_logic.h
 	$(CXX) $(CXXFLAGS) -I../tx -o $@ test_tx_wake_logic.cpp
+
+test_rtc_checksum: test_rtc_checksum.cpp ../tx/rtc_checksum.h ../tx/door_wake_logic.h
+	$(CXX) $(CXXFLAGS) -I../tx -o $@ test_rtc_checksum.cpp
 
 clean:
 	rm -f $(BINS)
