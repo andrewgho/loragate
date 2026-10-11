@@ -99,6 +99,9 @@ below for its fields. `tx/` needs no `local.h` (no WiFi).
     wake-decision logic (see "Phase 2 protocol" below), including
     regression cases for bugs caught by manual review before this file
     existed.
+  - `test_rtc_checksum` — covers `tx/rtc_checksum.h`'s checksum over the
+    values that need to survive a restart, not just deep sleep (see
+    `PLAN.md`'s "Reset diagnostics").
 
 What neither of those reaches, and can only be confirmed by flashing real
 hardware: whether `esp_sleep_enable_ext1_wakeup()` actually wakes the
@@ -147,7 +150,13 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
   free of Arduino/radio dependencies so it's covered by
   `test_tx_wake_logic` (see "Testing" above) independent of any hardware;
   `tx/tx.ino`'s `setup()` is just the I/O shell that reads the pin, calls
-  into it, and carries out whatever it decides.
+  into it, and carries out whatever it decides. Persisted state
+  (`next_seq`, `wake_state`, the pending-diagnostic flags) is
+  `RTC_NOINIT_ATTR`, not `RTC_DATA_ATTR` — the latter only survives deep
+  sleep, not `ESP.restart()` — verified against by a checksum
+  (`tx/rtc_checksum.h`) rather than trusting the compile-time
+  initializers RTC_NOINIT_ATTR doesn't honor; see `PLAN.md`'s "Reset
+  diagnostics".
 - Same send/ack/retry link layer as phase 1.
 - Still open: battery voltage, and whichever clock field ends up on the
   wire (see `PLAN.md`'s "Open items").

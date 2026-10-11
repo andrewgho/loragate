@@ -71,6 +71,9 @@ up a fresh checkout.
   "Never missing a state change"). Verified non-vacuous by deliberately
   reintroducing both bugs in a scratch copy and confirming the
   corresponding assertions fail.
+- `test/test_rtc_checksum.cpp` — `tx/rtc_checksum.h`'s FNV-1a checksum
+  over the state that needs to survive `ESP.restart()`, not just deep
+  sleep (see "Design decisions" below).
 - None of this reaches hardware-in-the-loop behavior: whether
   `esp_sleep_enable_ext1_wakeup()` actually wakes the board on a real
   edge during real deep sleep, contact-bounce timing, RF range/retry, or
@@ -123,16 +126,30 @@ up a fresh checkout.
   automatically).
 - **tx reports abnormal reset reasons via `PKT_DIAGNOSTIC`**, prompted by
   a live-testing symptom (rapid door toggling occasionally dropped an
-  event and reset `next_seq` to 0 — only explainable by an actual
-  power-on/brownout reset, since `RTC_DATA_ATTR` is otherwise never
-  zeroed). `esp_reset_reason()` is checked as early as possible, before
-  `radio.begin()` — live testing caught a real case where checking it
-  only in the success path meant the diagnostic for a genuine brownout
-  went missing entirely, because `radio.begin()` itself failed on that
-  wake and the *next* wake's reset reason read back as routine before
-  radio ever came up. `diagnostic_pending`/`pending_diagnostic_info`
-  (`RTC_DATA_ATTR`) now carry a detected anomaly across however many
-  wakes it takes for the radio to actually work. See PLAN.md's "Reset
-  diagnostics" for the full mechanism and the hardware hypothesis (two TX
-  current bursts landing close together on a 1µF-capped MCP1700) it was
-  added to investigate.
+  event and reset `next_seq` to 0). `esp_reset_reason()` is checked as
+  early as possible, before `radio.begin()` — live testing caught a real
+  case where checking it only in the success path meant the diagnostic
+  for a genuine anomaly went missing entirely, because `radio.begin()`
+  itself failed on that wake and the *next* wake's reset reason read back
+  as routine before radio ever came up. `diagnostic_pending`/
+  `pending_diagnostic_info` carry a detected anomaly across however many
+  wakes it takes for the radio to actually work.
+- **Persisted tx state is `RTC_NOINIT_ATTR`, not `RTC_DATA_ATTR`** — the
+  actual root cause of the dropped-event/reset-to-0 symptom above.
+  `RTC_DATA_ATTR` is only documented to survive deep sleep, not
+  `ESP.restart()` (the rapid-slam/bounce guard's software reset) —
+  confirmed by live serial capture over a real UART0/FTDI connection
+  (native USB CDC doesn't survive deep sleep, so this needed
+  `CDCOnBoot=default` + an external adapter) showing `next_seq` and
+  `wake_state` reverting to zero across exactly that kind of reset.
+  `RTC_NOINIT_ATTR` survives both, but is never bootloader-zeroed, so a
+  true first boot reads back as undefined garbage rather than the
+  compile-time-initializer values it'd get under `RTC_DATA_ATTR`.
+  `tx/rtc_checksum.h`'s FNV-1a checksum (`persisted_checksum`, itself
+  `RTC_NOINIT_ATTR`) distinguishes genuine carried-over state from that
+  garbage — a mismatch is treated the same as an abnormal reset reason
+  (`RTC_DATA_LOSS_INFO` sentinel in the `info` byte) and resets the
+  persisted variables to safe defaults. See PLAN.md's "Reset
+  diagnostics" for the full mechanism, both bugs it covers, and the
+  still-open hardware-brownout hypothesis (two TX current bursts landing
+  close together on a 1µF-capped MCP1700) it was added to investigate.

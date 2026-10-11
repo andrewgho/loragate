@@ -130,29 +130,64 @@ rapid-slam-guard restart, above). `rx/rx.ino` maps the code to a short
 name (`reset_reason_name()`) and logs it to `DIAGNOSTIC_URL_TEMPLATE` —
 see README.md's "Phase 2 protocol".
 
-Detecting it this early matters: live testing caught a real gap where the
-diagnostic went missing entirely. The wake immediately after an abnormal
-reset is exactly the one `radio.begin()` is least likely to succeed on
-(things are least settled right then) — if detection only happened in
-the success path, that wake would hit the `radio.begin()` failure branch
-and go straight back to a normal sleep with nothing ever checked or sent.
-The *next* wake's own `esp_reset_reason()` then reads back as the routine
-`ESP_RST_DEEPSLEEP` cause for *that* wake, and the anomaly is gone for
-good — exactly what was observed: no diagnostic, immediately followed by
-a clean door event on `seq=0`. Fixed with `diagnostic_pending` /
-`pending_diagnostic_info` (`RTC_DATA_ATTR`): detection latches them as
-soon as an abnormal reason is seen, independent of radio state; sending
-happens once the radio is confirmed working, however many wakes later
-that turns out to be.
+Two real bugs turned up while chasing this, each caught by a live
+capture, each fixed:
 
-This reports *that* an abnormal reset happened and *what kind*, generically
+1. **The diagnostic itself could go missing.** The wake immediately after
+   an abnormal reset is exactly the one `radio.begin()` is least likely to
+   succeed on (things are least settled right then) — if detection only
+   happened in the success path, that wake would hit the `radio.begin()`
+   failure branch and go straight back to a normal sleep with nothing ever
+   checked or sent. The *next* wake's own `esp_reset_reason()` then reads
+   back as the routine `ESP_RST_DEEPSLEEP` cause for *that* wake, and the
+   anomaly is gone for good. Fixed by moving detection to before
+   `radio.begin()` and persisting it (`diagnostic_pending` /
+   `pending_diagnostic_info`) across however many wakes it takes for the
+   radio to actually come up — sending still only happens once it does.
+
+2. **The actual root cause, found with full tx-side serial visibility**
+   (native USB CDC drops on every deep sleep, so this needed UART0 routed
+   to an external USB-TTL adapter — `CDCOnBoot=default` in the FQBN,
+   D6/D7, no code change). A captured boot showed `rst:0xc (SW_CPU)` —
+   our own rapid-slam-guard's `ESP.restart()` — immediately followed by
+   `wake_state.have_committed_state` reading back `false` and `next_seq`
+   reset to 0, as if it had been a power-on. It hadn't: `RTC_DATA_ATTR` is
+   only ever documented to survive *deep sleep* ("will keep its value
+   during a deep sleep / wake cycle" — `esp_attr.h`'s own comment,
+   confirmed against the installed core directly after a Stack Overflow
+   answer pointed at the right distinction); a restart was never covered.
+   `RTC_NOINIT_ATTR` is the one documented to survive "after restart or
+   during a deep sleep / wake cycle." This was never just a missing
+   diagnostic — the door-open transition that triggered the rapid-slam
+   guard in the first place was silently re-baselined away on that reset,
+   with no event ever sent for it, a real violation of "never missing a
+   state change" above, not just a gap in the feature built to
+   investigate a suspected brownout.
+
+   `next_seq`, `wake_state`, `diagnostic_pending`, and
+   `pending_diagnostic_info` all moved to `RTC_NOINIT_ATTR`. Since that
+   section is skipped entirely by the bootloader's startup init (contents
+   are undefined on a true first boot, unlike `RTC_DATA_ATTR`'s), a
+   checksum (`tx/rtc_checksum.h`, FNV-1a over all four values, pure and
+   host-tested — `test/test_rtc_checksum.cpp`) stands in for the
+   compile-time initializers that would no longer be honored: refreshed
+   at the top of `enter_safe_deep_sleep()` so it always reflects a wake's
+   final values, verified on the next wake, and used to reset everything
+   to known-safe values on a mismatch. A mismatch alongside a
+   `reset_reason` that still claims to be routine — which should be
+   impossible now — gets a distinct sentinel `info` value
+   (`RTC_DATA_LOSS_INFO`, 255) rather than being mislabeled with a reason
+   that doesn't fit.
+
+This mechanism reports *that* an abnormal reset happened and *what kind*
 (brownout, panic, watchdog, a repeat power-on, …) — it doesn't change
-anything about the hardware's actual susceptibility to the brownout in
-the first place. If it keeps happening, the next place to look is the
-power rail itself: 1µF is a fairly small reservoir for buffering a ~35mA
-transmit step landing twice in quick succession, and battery/holder
-contact quality under a fast double-draw is also worth checking — see
-"Power budget" below for the active-current figures this is stressing.
+anything about the hardware's actual susceptibility to a genuine brownout
+in the first place, which (independent of the `ESP.restart()` bug above)
+remains a real, still-open question. If `brownout` specifically keeps
+showing up, the next place to look is the power rail itself — see "Power
+budget" below for the corrected (much higher than first assumed)
+active-current figures this is actually stressing, and the already-"free"
+lever (lower `LORA_TX_POWER_DBM`) that follows directly from them.
 
 ## Power budget
 
@@ -172,9 +207,20 @@ measured yet, they're either datasheet figures or estimates:
 | **Total, Option A** | **~39µA** | vs. the original plan's ~65µA, mostly because the pull-up choice differs |
 | **Total, Option B (as currently built)** | **~41µA typ / ~44µA max** | same breakdown, with Option B's higher LDO quiescent current in place of Option A's |
 
-Active transmit: ~120ms at ~35mA per event (radio TX current at 22dBm,
-datasheet figure) — negligible against sleep current unless the gate cycles
-constantly.
+Active transmit: ~120ms at **~120mA** per event at +22dBm (the current
+`LORA_TX_POWER_DBM`) — negligible against sleep current unless the gate
+cycles constantly. This replaces an earlier ~35mA figure here that turned
+out to be wrong by more than 3x: pulled directly from two independent
+primary sources once the actual datasheets were on hand — Semtech's
+SX1261/2 datasheet (Table 3-6, 915MHz band, SX1262: 118mA typical at
++22dBm) and Seeed's Wio-SX1262 *module* datasheet, the actual installed
+part (`"Maximum operation current (Transmitter): 125mA @22dBm"`,
+independently measured at the module level). Also relevant to the
+brownout investigation below: RadioLib already applies Semtech's
+per-power-level PA optimization by default (`SX1262::setOutputPower()`'s
+`optimize` parameter defaults `true`), so dropping `LORA_TX_POWER_DBM` is
+a real, already-"free" lever — roughly 84mA at +20dBm, 58mA at +17dBm,
+45mA at +14dBm, no code change beyond the `#define`, not yet done.
 
 That 120ms figure is the radio burst alone — it doesn't include whatever
 the CPU does awake before and after it, which this table has otherwise
@@ -209,21 +255,25 @@ to measure:
 ```
 Option A (TPS7A0233):
 sleep:  0.039mA * 24h                    ≈ 0.936 mAh/day
-active: 20 * 0.120s * 35mA / 3600        ≈ 0.023 mAh/day
-total                                    ≈ 0.959 mAh/day
-2,100 mAh / (0.959 mAh/day * 365)        ≈ 6.0 years
+active: 20 * 0.120s * 125mA / 3600       ≈ 0.083 mAh/day
+total                                    ≈ 1.019 mAh/day
+2,100 mAh / (1.019 mAh/day * 365)        ≈ 5.6 years
 
 Option B (MCP1700, typical IQ — as currently built):
 sleep:  0.0412mA * 24h                   ≈ 0.989 mAh/day
-active: 20 * 0.120s * 35mA / 3600        ≈ 0.023 mAh/day
-total                                    ≈ 1.012 mAh/day
-2,100 mAh / (1.012 mAh/day * 365)        ≈ 5.7 years
+active: 20 * 0.120s * 125mA / 3600       ≈ 0.083 mAh/day
+total                                    ≈ 1.072 mAh/day
+2,100 mAh / (1.072 mAh/day * 365)        ≈ 5.4 years
 ```
 
 Option B at its 4µA worst-case (not just 1.6µA typical) comes out to
-roughly 5.4 years instead of 5.7 — still comfortably clears the "2+ years
+roughly 5.1 years instead of 5.4 — still comfortably clears the "2+ years
 would be satisfying in practice" bar this project is actually targeting,
-which matters more here than the gap between the two options.
+which matters more here than the gap between the two options. (Using the
+125mA module-measured figure here, not the 118mA chip-datasheet one —
+slightly more conservative, and it's what the actual installed part is
+rated for.) Dropping to a lower `LORA_TX_POWER_DBM` would shrink the
+active line further still, on top of easing the brownout risk below.
 
 Treat this as optimistic-of-the-corrected-numbers, not a promise — the
 individual leakage line items are still estimates. Worth an actual current
