@@ -133,6 +133,80 @@ onboard Li-ion/LiPo charge controller tuned for a rechargeable 3.7V cell,
 which will try to charge whatever's connected there. Primary cells aren't
 designed to be recharged.
 
+### Short-circuit protection
+
+**[Bourns MF-R050](https://www.digikey.com/en/products/detail/bourns-inc/MF-R050/259965)
+(or TE Connectivity/Raychem RXE050 as a dual-sourced equivalent — the two
+datasheets agree closely enough to be interchangeable), a resettable PTC
+fuse, in series between the battery holder and the LDO's input** — not on
+the regulated 3V3 output side. Radial leaded, 5.08mm/0.2" lead spacing
+(2× the standard 0.1" grid), so it plugs into the Perma-Proto the same
+way everything else here does.
+
+**Why this is needed at all, given both ends of this path already protect
+themselves:** each L91 cell has its own internal PTC (trips at 85°C) plus
+a mechanical pressure-relief vent, and is independently safety-rated to
+survive a direct external short without fire or explosion — the same bar
+UL 1642/IEC 62133-style cell safety testing requires, already met with
+zero added protection (see Energizer's *Cylindrical Primary Lithium
+Handbook and Application Manual*). The MCP1700 (Option B, currently
+installed) has its own internal overcurrent monitor and thermal shutdown
+on the output side — a short there gets hiccup-limited by the chip
+itself, not left to the battery. What neither of those covers is the
+**wiring, JST-PH connector, and battery holder's spring contacts between
+the pack and the LDO** — none of which carry a comparable rating, and a
+raw-pack short can still drive several amps through them for a few
+seconds before the cells' own PTCs clamp it down (see the trip-time
+estimate below).
+
+**Why MF-R050 specifically, not a smaller part:** the never-nuisance-trip
+floor should be set by the MCP1700's own rated maximum continuous current
+(250mA, its datasheet's absolute ceiling), not by this firmware's current
+~125mA TX-burst draw — sizing to today's firmware would let the fuse
+become an unintended bottleneck against anything the regulator itself is
+legitimately rated to do, now or after a future firmware change. Checked
+against this project's own already-established 140°F/60°C worst-case
+ambient (same ceiling the L91 cells themselves are rated to, "Why primary
+lithium over rechargeable Li-ion/LiPo" above) using Bourns' and TE's own
+thermal-derating tables:
+
+| Part | Ihold @23°C | Ihold @60°C (derated) | Margin over 250mA floor | Ri max |
+|---|---|---|---|---|
+| MF-R030 | 300mA | 190mA | **under the floor** | 1.36Ω |
+| MF-R040 | 400mA | 250mA | **zero margin** | 0.86Ω |
+| **MF-R050 (chosen)** | 500mA | 320mA | **+70mA** | 0.77Ω |
+
+MF-R050 is the smallest part in this family that clears the corrected
+floor with real margin. It also happens to carry *less* resistance than
+the smaller parts, not more — this family's resistance drops as its
+current rating rises, so correcting the floor upward didn't cost
+anything on voltage drop: ~0.10V at our actual ~125mA TX current
+(0.77Ω max × 0.125A), using the worst-case (not yet measured) resistance
+figure. That adds to whatever the battery's own internal resistance
+already costs at end-of-discharge — small, but not zero, and not yet
+checked against a measured near-end-of-life voltage-sag-under-load trace.
+
+**Trip-time estimate for a real short:** Energizer's application manual
+gives a measured effective pulse internal resistance of "about 100mΩ"
+per L91 cell (10mA/50ms then 500mA/100ms pulse regime — not a true
+dead-short characterization, so this is an extrapolation, not a
+validated figure at short-circuit current). Three cells in series
+(~0.3Ω) plus MF-R050's own resistance (0.41-0.77Ω) plus an unsourced
+wiring/connector allowance (~0.15Ω) gives roughly 1.0Ω total loop
+resistance, and at a fresh pack's ~5.4V, an estimated ~5A short-circuit
+current — comfortably above MF-R050's 2.5A qualification current, at
+which its datasheet guarantees tripping within 4.0 seconds, worst case.
+Real trip time at ~5A is very likely faster than that 4.0s figure (PTC
+trip time drops as overcurrent rises above the qualification point), but
+the exact curve wasn't extractable from the datasheet's graph (vector
+data, not text) to quote a tighter number.
+
+There's no separate industry-standard "external protection must trip
+within N seconds" figure independent of the cell-level short-circuit pass/
+fail test already covered above — this fuse is a secondary, non-regulatory
+layer protecting the wiring and holder specifically, not something
+required to keep the cells themselves from being dangerous.
+
 ### Choosing an LDO
 
 Whichever chip is used, the sizing logic is the same: fixed 3.3V output,
@@ -471,6 +545,7 @@ pinout right and hold up fine:
 | MCP1700-3302E/TO (Microchip, TO-92, 3.3V fixed LDO) | 1 | **Option B, currently installed** — confirmed working, no adapter needed — see "Power" → "Choosing an LDO" |
 | Through-hole ceramic capacitor, ~1µF ("105") | 2 | **Option B** — VIN and VOUT bypass, both required for stability; ceramic/tantalum/electrolytic all acceptable — see "Power" |
 | JST-PH 2.0mm 2-pin connector pair | 1 | already have (pre-crimped, inline-soldered) |
+| [Bourns MF-R050](https://www.digikey.com/en/products/detail/bourns-inc/MF-R050/259965) (or TE/Raychem RXE050) resettable PTC fuse | 1 | battery-to-LDO short-circuit protection — see "Power" → "Short-circuit protection" |
 | 1MΩ resistor | 1 | already have (from assortment) |
 | ADS1115 I2C ADC — "HW-543"-style purple-PCB breakout (generic, ships fast from Amazon; confirm the specific listing's schematic — no LED, no regulator), or [Adafruit #1085](https://www.adafruit.com/product/1085) as the documented fallback | 1 | battery-voltage monitoring, address 0x48 (clear of the DS3231's 0x68) — see "Battery voltage monitoring" → "Sourcing" |
 | 4.7MΩ resistor | 1 | raw-battery divider, top half |
