@@ -97,12 +97,26 @@ up a fresh checkout.
   condition the first check already reported. `held_open_checked`
   (`DoorWakeState`) tracks this and resets on every transition.
 - **Every wake diffs the real pin against a persisted "last reported"
-  baseline, never trusting `esp_sleep_get_wakeup_cause()`.** This is the
-  core invariant behind "never miss a door state change" — see PLAN.md's
-  "Never missing a state change" for the full reasoning, including the
-  radio.begin()-failure edge case that required a real fix (baseline must
-  be established even when the radio is down, or a later successful wake
-  can silently adopt a stale state as "the starting point").
+  baseline — whether a transition happened is never decided from
+  `esp_sleep_get_wakeup_cause()`.** This is the core invariant behind
+  "never miss a door state change" — see PLAN.md's "Never missing a
+  state change" for the full reasoning, including the radio.begin()-failure
+  edge case that required a real fix (baseline must be established even
+  when the radio is down, or a later successful wake can silently adopt a
+  stale state as "the starting point"). `esp_sleep_get_wakeup_cause()` is
+  consulted for a separate, narrower question once a wake is already
+  known to carry no transition — see the spurious-wake bullet below.
+- **A no-transition wake still needs to know if it was the timer or a
+  spurious edge** (`decide_wake_action()`'s `timer_wakeup` parameter,
+  `WAKE_ACTION_SPURIOUS`) — found via manual review of a live field log
+  showing three heartbeats within ~2 seconds, nowhere near
+  `HEARTBEAT_INTERVAL_SECONDS` apart. A reed-switch edge that settles
+  back to the same debounced state (contact bounce/mechanical chatter,
+  plausible outdoors) still fires a real ext1 wakeup; without
+  distinguishing it from a genuinely elapsed timer, every such wake
+  either sent an unneeded heartbeat or, worse, consumed the held-open
+  check's one-shot budget before `HELD_OPEN_CHECK_SECONDS` had actually
+  passed. See PLAN.md's "Wake behavior" for the fix.
 - **tx's wake-decision logic is intentionally factored out of tx.ino**
   into `door_wake_logic.h` — plain C++, no Arduino/radio includes — so it
   can be unit-tested without the ESP32 toolchain. If you're touching the

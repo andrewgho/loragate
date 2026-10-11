@@ -146,9 +146,14 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
   configurable) timer and sends a heartbeat if nothing else has happened by
   then — every event type counts equally as "still alive", so the hourly
   timer is really just a floor on how long the transmitter can go quiet,
-  not a guarantee of a literal heartbeat packet every hour. Deep sleep
-  between wakes; see `PLAN.md`'s "Wake behavior" for the state machine and
-  its rapid-slam/bounce guard. The decision itself — what a given wake
+  not a guarantee of a literal heartbeat packet every hour. A reed-switch
+  edge that fires a real wakeup but settles back to the same debounced
+  state (contact bounce, outdoor mechanical chatter) doesn't send
+  anything — only the RTC timer itself actually elapsing sends a
+  heartbeat or runs the held-open check. Deep sleep between wakes; see
+  `PLAN.md`'s "Wake behavior" for the full state machine, this
+  spurious-wake distinction, and the rapid-slam/bounce guard. The
+  decision itself — what a given wake
   means and what it should send — lives in `tx/door_wake_logic.h`, kept
   free of Arduino/radio dependencies so it's covered by
   `test_tx_wake_logic` (see "Testing" above) independent of any hardware;

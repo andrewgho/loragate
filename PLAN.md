@@ -51,6 +51,24 @@ expected:
     see `README.md`'s "Phase 2 protocol") is what covers "someone just
     opened the door" on a faster timescale than this 300s check needs to.
 
+**A real ext1 edge with no net transition isn't nothing — it needs its
+own outcome.** Caught via manual review of a live field log: a reed
+switch (especially outdoor, subject to wind/vibration on the gate) can
+bounce or chatter briefly enough that `read_debounced_state()` settles
+back to the same value, while still firing a real ext1 wakeup. Before
+this was handled, `decide_wake_action()` had no way to tell that apart
+from "the timer legitimately elapsed" — both landed on the same
+heartbeat/held-open-check branches — so every such chatter wake burned a
+full radio-and-transmit cycle on an unneeded heartbeat, and during an
+open episode could consume the held-open check's one-shot budget long
+before `HELD_OPEN_CHECK_SECONDS` had actually passed. Fixed by passing
+`esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER` into
+`decide_wake_action()` as `timer_wakeup`, consulted only in the
+already-no-transition branches — a new `WAKE_ACTION_SPURIOUS` covers "no
+change, and it wasn't the timer either," which just goes back to sleep
+without transmitting. See "Never missing a state change" below for why
+this doesn't weaken that invariant.
+
 ## Rapid-slam / bounce guard
 
 If the door slams shut while the node is still transmitting the
@@ -76,12 +94,18 @@ catch-up loop for the equivalent case while a send is in flight), but the
 reported. Two things make that hold:
 
 - **A persisted "last reported" baseline** (`wake_state.door_open_committed`
-  in `door_wake_logic.h`'s `DoorWakeState`, held in an `RTC_DATA_ATTR`
-  global so it survives deep sleep) that every wake diffs the pin against
-  — not `esp_sleep_get_wakeup_cause()`, which is never consulted. Every
-  wake, for any reason, ends up asking the same question: "does the real
-  pin state match what we last told the world?" This sidesteps an entire
-  class of bugs where a wake gets misattributed to the wrong cause.
+  in `door_wake_logic.h`'s `DoorWakeState`, held in an `RTC_NOINIT_ATTR`
+  global so it survives both deep sleep and a restart — see "Reset
+  diagnostics") that every wake diffs the pin against. Every wake, for
+  any reason, ends up asking the same question: "does the real pin state
+  match what we last told the world?" — whether a transition happened is
+  never decided from `esp_sleep_get_wakeup_cause()`, sidestepping an
+  entire class of bugs where that gets misattributed to the wrong cause.
+  `esp_sleep_get_wakeup_cause()` *is* consulted for a narrower, separate
+  question — once a wake is already known to carry no transition, was it
+  the timer or a spurious edge (see "Wake behavior"'s
+  `WAKE_ACTION_SPURIOUS`) — which never feeds back into whether a
+  transition gets reported.
 - **A hard backstop on every path**: an open episode always gets a wake
   within `HELD_OPEN_CHECK_SECONDS`, a closed/idle period within
   `HEARTBEAT_INTERVAL_SECONDS`. Both of those wakes re-run the same diff.

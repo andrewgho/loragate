@@ -40,6 +40,7 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <esp_system.h>
+#include <esp_sleep.h>
 #include "lora_pins.h"
 #include "lora_packet.h"
 #include "door_wake_logic.h"
@@ -392,11 +393,20 @@ void setup() {
 
   bool actual_open = read_debounced_state();
 
+  // Whether this wake's actual cause was the RTC timer we armed, as
+  // opposed to the reed-switch ext1 edge (almost always, when it isn't
+  // the timer) — only consulted by decide_wake_action() in the
+  // already-no-transition branches, to tell a genuinely elapsed timer
+  // apart from reed-switch contact bounce/chatter that fires the edge
+  // wakeup without actually changing the debounced state. See
+  // door_wake_logic.h's comment on decide_wake_action() for why.
+  bool timer_wakeup = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
+
   // decide_wake_action() (door_wake_logic.h) is the pure decision — no
   // Arduino/radio dependencies, host-tested in test/test_tx_wake_logic.cpp
   // — of what this wake means; everything below is just carrying out
   // whichever decision it already made and updated wake_state for.
-  switch (decide_wake_action(wake_state, actual_open)) {
+  switch (decide_wake_action(wake_state, actual_open, timer_wakeup)) {
     case WAKE_ACTION_NONE:
       // First boot (power-on, not a sleep wake) where radio.begin()
       // happened to succeed on the very first attempt — nothing to
@@ -424,6 +434,14 @@ void setup() {
       // without anything else to report.
       Serial.println("heartbeat");
       send_event(PKT_HEARTBEAT, 0);
+      break;
+    case WAKE_ACTION_SPURIOUS:
+      // A real ext1 edge fired, but the debounced read settled back to
+      // the same state we already have committed, and this wasn't the
+      // timer either — reed-switch contact bounce or mechanical chatter,
+      // not a real transition. Nothing to send; go back to sleep without
+      // spending a radio/transmit cycle on it.
+      Serial.println("spurious wake (edge, no net change); nothing to report");
       break;
   }
 
