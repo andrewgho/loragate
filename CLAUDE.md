@@ -74,6 +74,8 @@ up a fresh checkout.
 - `test/test_rtc_checksum.cpp` — `tx/rtc_checksum.h`'s FNV-1a checksum
   over the state that needs to survive `ESP.restart()`, not just deep
   sleep (see "Design decisions" below).
+- `test/test_seq_dedup.cpp` — `rx/seq_dedup.h`'s retry-vs-duplicate check
+  (see "Design decisions" below).
 - None of this reaches hardware-in-the-loop behavior: whether
   `esp_sleep_enable_ext1_wakeup()` actually wakes the board on a real
   edge during real deep sleep, contact-bounce timing, RF range/retry, or
@@ -124,6 +126,17 @@ up a fresh checkout.
   `HELD_OPEN_CHECK_SECONDS`; not itself on the wire, so this is a
   compile-time contract between the two sketches, not something enforced
   automatically).
+- **rx dedups by `seq` before acting on a packet, separate from acking.**
+  Found via manual review of a long field log: tx retries a send whenever
+  its ack doesn't come back, even if rx did receive and ack the original
+  fine — rx was re-running the full per-type handling (including the HTTP
+  notify, and for `PKT_DOOR_OPEN` resetting `door_opened_at_ms`) on every
+  such retry, double-reporting one logical event. Acking stays
+  unconditional (needed so tx actually stops retrying); `seq_dedup.h`'s
+  `is_duplicate_seq()` gates everything after that on an exact repeat of
+  the last `seq` processed, not a `<=` comparison — a `seq` that's lower
+  than expected means real data loss on tx (see `RTC_DATA_LOSS_INFO`
+  above), not a duplicate, and is still worth reporting.
 - **tx reports abnormal reset reasons via `PKT_DIAGNOSTIC`**, prompted by
   a live-testing symptom (rapid door toggling occasionally dropped an
   event and reset `next_seq` to 0). `esp_reset_reason()` is checked as

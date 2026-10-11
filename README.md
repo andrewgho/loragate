@@ -102,6 +102,9 @@ below for its fields. `tx/` needs no `local.h` (no WiFi).
   - `test_rtc_checksum` — covers `tx/rtc_checksum.h`'s checksum over the
     values that need to survive a restart, not just deep sleep (see
     `PLAN.md`'s "Reset diagnostics").
+  - `test_seq_dedup` — covers `rx/seq_dedup.h`'s retry-vs-duplicate check,
+    a regression test for a real bug caught by manual log review (an
+    ack-loss retry was double-notifying the server for the same event).
 
 What neither of those reaches, and can only be confirmed by flashing real
 hardware: whether `esp_sleep_enable_ext1_wakeup()` actually wakes the
@@ -162,6 +165,12 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
   wire (see `PLAN.md`'s "Open items").
 - `rx/rx.ino` forwards every recognized packet to the monitoring server
   (`open`/`close`/`heartbeat`, each carrying `seq`/`txno`) and also:
+  - Dedups by `seq` before acting on a packet (`seq_dedup.h`,
+    `test_seq_dedup` — see "Testing" above): acks every recognized packet
+    unconditionally (needed so tx stops retrying), but an exact repeat of
+    the last `seq` — tx retrying because its ack got lost, not because
+    the original send failed — skips the notify/state-update side
+    effects that already ran once for it.
   - Hits `STARTUP_LOG_URL` once, the first time WiFi comes up after boot.
   - Syncs its clock from `NTP_SERVER` on every WiFi (re)connect and once a
     day after that, and includes `localtime=<epoch seconds>` on every

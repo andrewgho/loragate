@@ -16,6 +16,7 @@
 #include <esp_system.h>
 #include "lora_pins.h"
 #include "lora_packet.h"
+#include "seq_dedup.h"
 #include "local.h"
 
 #define WIFI_TIMEOUT_MS 10000
@@ -67,6 +68,14 @@ bool short_open_alerted = false; // true once we've reported this open episode
 // counts too, not just silence after first contact.
 uint32_t last_rx_ms;
 bool stale_alerted = false;      // true once we've reported this silence
+
+// Dedup for handle_packet(): see seq_dedup.h. Not RTC-persisted — rx is
+// mains-powered and never restarts on its own, so losing this across an
+// actual rx reboot (re-processing whatever tx happens to retry next) is
+// an acceptable, rare edge case, not worth the complexity RTC persistence
+// would add here.
+bool have_last_seq = false;
+uint32_t last_seq = 0;
 
 // Any real epoch is far larger than this; time(nullptr) reads back as
 // just seconds-since-boot (near 0) until the first SNTP reply lands.
@@ -306,6 +315,20 @@ void handle_packet() {
 
   float rssi = radio.getRSSI();
   float snr = radio.getSNR();
+
+  // A retry whose *ack* got lost — even though we did receive and ack the
+  // original — resends the same seq with a different txno. We've already
+  // re-acked it above (needed, so tx stops retrying); re-running the rest
+  // below a second time would double-notify the server, and for
+  // PKT_DOOR_OPEN specifically would also wrongly restart
+  // door_opened_at_ms as if the open event had just happened again.
+  if (is_duplicate_seq(have_last_seq, last_seq, pkt.seq)) {
+    LOG("duplicate seq=%lu txno=%u type=%d; already processed, ack only",
+        (unsigned long)pkt.seq, pkt.txno, pkt.type);
+    return;
+  }
+  have_last_seq = true;
+  last_seq = pkt.seq;
 
   switch (pkt.type) {
     case PKT_HEARTBEAT:
