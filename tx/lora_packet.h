@@ -23,8 +23,10 @@ enum LoraPacketType : uint8_t {
                            // open — see tx/tx.ino's file header comment.
   PKT_DIAGNOSTIC     = 6,  // transmitter reporting an abnormal boot/reset
                            // reason (info = esp_reset_reason_t cast to
-                           // uint8_t); not sent on routine wakes — see
-                           // PLAN.md's "Reset diagnostics".
+                           // uint8_t, or 255 meaning persisted state was
+                           // lost despite an apparently-routine reset);
+                           // not sent on routine wakes — see PLAN.md's
+                           // "Reset diagnostics".
 };
 
 struct __attribute__((packed)) LoraPacket {
@@ -33,5 +35,6 @@ struct __attribute__((packed)) LoraPacket {
   uint8_t  txno;  // which transmit attempt this is (0 = first try, 1 = first
                   // retry, ...); meaningful on data packets, unused/0 on acks.
   uint8_t  info;  // reserved/0 for every other type; esp_reset_reason_t cast
-                  // to uint8_t for PKT_DIAGNOSTIC.
+                  // to uint8_t for PKT_DIAGNOSTIC (or 255 — see tx/tx.ino's
+                  // RTC_DATA_LOSS_INFO).
 };

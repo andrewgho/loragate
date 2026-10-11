@@ -20,21 +20,22 @@
 // the door"; this file's HELD_OPEN_CHECK_SECONDS is the slower, hardware
 // re-verified "still open, probably forgotten" follow-up.
 //
-// RTC_DATA_ATTR state survives deep sleep (reset to zero only on power-on)
-// so the seq counter and committed door state carry across wake cycles;
-// everything else (SPI, radio) is reinitialized from scratch each wake,
-// same as tx-test.ino. There is no persistent loop() here — each wake runs
-// setup() once, decides what (if anything) to transmit, and goes back to
-// sleep from inside it.
+// RTC_NOINIT_ATTR state survives both deep sleep *and* a restart (see
+// rtc_checksum.h) so the seq counter and committed door state carry
+// across wake cycles; everything else (SPI, radio) is reinitialized from
+// scratch each wake, same as tx-test.ino. There is no persistent loop()
+// here — each wake runs setup() once, decides what (if anything) to
+// transmit, and goes back to sleep from inside it.
 //
 // Also reports a PKT_DIAGNOSTIC if a wake was caused by anything other
-// than a routine deep-sleep wake or our own deliberate restart — detected
-// as early as possible (before radio.begin()) and carried in
-// diagnostic_pending across however many wakes it takes for the radio to
-// actually come up, since the wake right after an abnormal reset is
-// exactly the one radio.begin() is least likely to succeed on. See
-// PLAN.md's "Reset diagnostics" for why this exists (a live brownout
-// investigation).
+// than a routine deep-sleep wake or our own deliberate restart, or if
+// persisted state turns out to have been lost despite the reset reason
+// claiming one of those two routine causes — detected as early as
+// possible (before radio.begin()) and carried in diagnostic_pending
+// across however many wakes it takes for the radio to actually come up.
+// See PLAN.md's "Reset diagnostics" for why this exists (a live brownout
+// investigation that turned up a real RTC_DATA_ATTR-vs-RTC_NOINIT_ATTR
+// bug along the way).
 
 #include <SPI.h>
 #include <RadioLib.h>
@@ -42,6 +43,7 @@
 #include "lora_pins.h"
 #include "lora_packet.h"
 #include "door_wake_logic.h"
+#include "rtc_checksum.h"
 
 // D0/GPIO0 per WIRING.md: external 1M pull-up to 3V3, contacts closed
 // (continuity, reads LOW) when the magnet is present (gate closed), open
@@ -72,8 +74,17 @@
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
-RTC_DATA_ATTR uint32_t next_seq = 0;
-RTC_DATA_ATTR DoorWakeState wake_state = {false, false, false};  // see door_wake_logic.h
+// RTC_NOINIT_ATTR, not RTC_DATA_ATTR: these need to survive a restart
+// (ESP.restart(), e.g. the rapid-slam guard below), and RTC_DATA_ATTR is
+// only documented to survive deep sleep, not a restart — confirmed the
+// hard way via live testing, then directly against esp_attr.h's own doc
+// comments. No initializers here: .rtc_noinit is skipped entirely by the
+// bootloader's startup init, so any "= ..." would never actually run —
+// real starting values are established explicitly in setup() the first
+// time persisted_checksum fails to validate. See PLAN.md's "Reset
+// diagnostics" and rtc_checksum.h.
+RTC_NOINIT_ATTR uint32_t next_seq;
+RTC_NOINIT_ATTR DoorWakeState wake_state;  // see door_wake_logic.h
 
 // Set as soon as an abnormal reset is detected (no radio needed for that),
 // cleared only once PKT_DIAGNOSTIC has actually gone out. Needed because
@@ -83,8 +94,23 @@ RTC_DATA_ATTR DoorWakeState wake_state = {false, false, false};  // see door_wak
 // which case esp_reset_reason() has already moved on to describing a
 // routine cause by the time a later wake's radio finally comes up. See
 // PLAN.md's "Reset diagnostics".
-RTC_DATA_ATTR bool diagnostic_pending = false;
-RTC_DATA_ATTR uint8_t pending_diagnostic_info = 0;
+RTC_NOINIT_ATTR bool diagnostic_pending;
+RTC_NOINIT_ATTR uint8_t pending_diagnostic_info;
+
+// Covers next_seq/wake_state/diagnostic_pending/pending_diagnostic_info —
+// see rtc_checksum.h. Refreshed at the top of enter_safe_deep_sleep(), so
+// it always reflects this wake's final values before anything that might
+// restart or sleep; verified against (and, if it doesn't match, used to
+// trigger resetting those four back to known-safe values) early in
+// setup(), alongside the reset-reason check.
+RTC_NOINIT_ATTR uint32_t persisted_checksum;
+
+// 255 isn't a real esp_reset_reason_t value (those top out well below
+// this) — used as PKT_DIAGNOSTIC's info when persisted_checksum doesn't
+// match despite a reset reason that claimed to be routine, which should
+// be impossible now but is worth a distinct, honest label if it ever
+// happens again. Must match RTC_DATA_LOSS_INFO in rx/rx.ino.
+#define RTC_DATA_LOSS_INFO 255
 
 volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
@@ -96,6 +122,13 @@ void IRAM_ATTR set_rx_flag() { rx_flag = true; }
 // convention as tx-test.ino.
 void enter_safe_deep_sleep(bool door_open, uint32_t seconds) __attribute__((noreturn));
 void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
+  // Refresh the checksum to match whatever next_seq/wake_state/etc. are
+  // right now, before anything below might restart or actually sleep —
+  // covers both outcomes of this function (the rapid-slam guard's
+  // ESP.restart() just below, and the real esp_deep_sleep_start() further
+  // down) from one place, so there's nothing to remember at each call site.
+  persisted_checksum = compute_persisted_checksum(next_seq, wake_state, diagnostic_pending, pending_diagnostic_info);
+
   // Re-read the pin right before committing to sleep: if it changed since
   // we decided door_open, arming a wakeup edge for the *old* state would
   // sleep through the transition that already happened (PLAN.md's
@@ -258,25 +291,50 @@ void setup() {
   pinMode(REED_PIN, INPUT);  // external 1M pull-up to 3V3 (WIRING.md) — no
                              // internal pull-up, matching the production circuit
 
-  // Detect an abnormal reset as early as possible — no radio needed for
-  // this read — so it's not missed if radio.begin() below happens to fail
-  // on this particular wake. esp_reset_reason() reports only the
-  // *immediately preceding* boot's cause: ESP_RST_DEEPSLEEP on every
-  // routine wake, ESP_RST_SW on our own rapid-slam-guard restarts
-  // (enter_safe_deep_sleep() below); anything else (ESP_RST_POWERON,
-  // ESP_RST_BROWNOUT, a watchdog, a panic, ...) is worth knowing about.
+  // Detect an abnormal reset, or persisted state that didn't survive
+  // despite a reset reason claiming it should have, as early as possible
+  // — neither check needs the radio, so neither is missed if
+  // radio.begin() below happens to fail on this particular wake.
   //
-  // Logged unconditionally (not just when abnormal) so a live serial
-  // monitor shows the reset reason on every boot — needed to tell apart
-  // "the reason just wasn't abnormal this time" from "something's
-  // corrupting RTC memory without going through a reset esp_reset_reason()
-  // can see at all", which no amount of checking this value can catch.
+  // esp_reset_reason() reports only the *immediately preceding* boot's
+  // cause: ESP_RST_DEEPSLEEP on every routine wake, ESP_RST_SW on our own
+  // rapid-slam-guard restarts (enter_safe_deep_sleep() above); anything
+  // else (ESP_RST_POWERON, ESP_RST_BROWNOUT, a watchdog, a panic, ...) is
+  // worth knowing about. Logged unconditionally (not just when abnormal)
+  // so a live serial monitor shows it on every boot.
   esp_reset_reason_t reset_reason = esp_reset_reason();
-  Serial.printf("reset reason: %d, diagnostic_pending=%d\n", (int)reset_reason, diagnostic_pending);
+  Serial.printf("reset reason: %d\n", (int)reset_reason);
+
+  // persisted_checksum is a second, independent check on top of
+  // reset_reason: live testing found that ESP.restart() does not reliably
+  // preserve RTC_DATA_ATTR (only RTC_NOINIT_ATTR is documented to survive
+  // a restart, not just deep sleep — see PLAN.md's "Reset diagnostics"),
+  // so a reset reason claiming "routine" couldn't always be trusted on
+  // its own. A mismatch here means next_seq/wake_state/etc. can't be
+  // trusted either (true first boot, or something corrupted them) — reset
+  // them to known-safe values before anything else reads them.
+  bool persisted_state_valid = (persisted_checksum ==
+      compute_persisted_checksum(next_seq, wake_state, diagnostic_pending, pending_diagnostic_info));
+  if (!persisted_state_valid) {
+    Serial.println("persisted state invalid (first boot, or unexpected loss); resetting");
+    next_seq = 0;
+    wake_state = (DoorWakeState){false, false, false};
+    diagnostic_pending = false;
+    pending_diagnostic_info = 0;
+  }
+  Serial.printf("persisted state valid: %d, diagnostic_pending=%d\n", persisted_state_valid, diagnostic_pending);
+
   if (reset_reason != ESP_RST_DEEPSLEEP && reset_reason != ESP_RST_SW) {
     Serial.printf("abnormal reset reason: %d\n", (int)reset_reason);
     diagnostic_pending = true;
     pending_diagnostic_info = (uint8_t)reset_reason;
+  } else if (!persisted_state_valid) {
+    // reset_reason claimed this was routine, but persisted state didn't
+    // survive anyway — shouldn't be possible now, but if it happens,
+    // label it honestly rather than under a reason that doesn't fit.
+    Serial.println("persisted state lost despite routine reset reason");
+    diagnostic_pending = true;
+    pending_diagnostic_info = RTC_DATA_LOSS_INFO;
   }
 
   pinMode(LORA_RFSW, OUTPUT);

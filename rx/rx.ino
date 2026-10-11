@@ -196,13 +196,23 @@ void report_door_open_past(unsigned seconds, const LoraPacket *pkt) {
   http_get(url);
 }
 
+// 255 isn't a real esp_reset_reason_t value (those top out well below
+// this) — tx.ino uses it to flag persisted state (RTC_NOINIT_ATTR) that
+// didn't survive despite a reset reason that claimed it should have,
+// which should be impossible but gets a distinct, honest label if it
+// ever happens anyway. Must match RTC_DATA_LOSS_INFO in tx/tx.ino. See
+// PLAN.md's "Reset diagnostics".
+#define RTC_DATA_LOSS_INFO 255
+
 // Maps a PKT_DIAGNOSTIC packet's `info` byte (an esp_reset_reason_t cast to
-// uint8_t — see tx/tx.ino) to a short name for the log URL's path
-// component. Falls back to "unknown" for anything not listed here rather
-// than failing — the raw numeric code is also sent separately (see
-// DIAGNOSTIC_URL_TEMPLATE's code= param) so a future reset reason this
-// table doesn't know about yet is still visible, just not named.
+// uint8_t, or RTC_DATA_LOSS_INFO — see tx/tx.ino) to a short name for the
+// log URL's path component. Falls back to "unknown" for anything not
+// listed here rather than failing — the raw numeric code is also sent
+// separately (see DIAGNOSTIC_URL_TEMPLATE's code= param) so a future
+// reset reason this table doesn't know about yet is still visible, just
+// not named.
 const char *reset_reason_name(uint8_t code) {
+  if (code == RTC_DATA_LOSS_INFO) return "rtc_data_loss";
   switch ((esp_reset_reason_t)code) {
     case ESP_RST_POWERON:   return "poweron";
     case ESP_RST_EXT:       return "ext";
