@@ -177,9 +177,6 @@ interference; the receiver logs "ack drop (test)" whenever it withholds one.
     the original send failed — skips the notify/state-update side
     effects that already ran once for it.
   - Hits `STARTUP_LOG_URL` once, the first time WiFi comes up after boot.
-  - Syncs its clock from `NTP_SERVER` on every WiFi (re)connect and once a
-    day after that, and includes `localtime=<epoch seconds>` on every
-    outgoing request (`http_get()`).
   - Keeps its own idea of the door state: raises
     `DOOR_OPEN_PAST_URL_TEMPLATE`'s `.../open_past/45` if a door-open
     episode runs past `SHORT_OPEN_THRESHOLD_SECONDS` without a close, and

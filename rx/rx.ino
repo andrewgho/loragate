@@ -4,10 +4,8 @@
 // the monitoring server: door open/close hit /notify/door/gate/{open,close},
 // heartbeats hit /log/door/gate/heartbeat, and an abnormal tx reset reason
 // (PKT_DIAGNOSTIC — see PLAN.md's "Reset diagnostics") hits
-// /log/door/gate/diagnostic/<reason>. Every outgoing request also carries
-// localtime=<this node's epoch seconds> (see http_get()). No retries or
-// error handling on the HTTP side yet — a failed request just gets logged
-// and dropped.
+// /log/door/gate/diagnostic/<reason>. No retries or error handling on the
+// HTTP side yet — a failed request just gets logged and dropped.
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -21,12 +19,8 @@
 
 #define WIFI_TIMEOUT_MS 10000
 
-// How often to resync the clock against NTP_SERVER when nothing else
-// prompts a sync — see wifi_connect() for the "on every connect" half.
-#define NTP_RESYNC_INTERVAL_MS (24UL * 60UL * 60UL * 1000UL)
-
 // How often loop() runs its periodic (not packet-triggered) checks —
-// NTP resync due, held-open/staleness thresholds, WiFi health.
+// held-open/staleness thresholds, WiFi health.
 #define HOUSEKEEPING_INTERVAL_MS 1000
 
 // Our own short-open alert: fires if the door's been open this long without
@@ -55,7 +49,6 @@ volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
 
 bool startup_log_sent = false;
-uint32_t last_ntp_sync_ms = 0;  // 0 = never synced; see run_housekeeping()
 
 // Our own idea of the door state, independent of whatever tx/tx.ino thinks
 // — kept so we can raise the short-open alert without waiting on a packet.
@@ -77,32 +70,6 @@ bool stale_alerted = false;      // true once we've reported this silence
 bool have_last_seq = false;
 uint32_t last_seq = 0;
 
-// Any real epoch is far larger than this; time(nullptr) reads back as
-// just seconds-since-boot (near 0) until the first SNTP reply lands.
-#define NTP_SANE_EPOCH 1700000000UL  // 2023-11-14, comfortably in the past
-#define NTP_SYNC_WAIT_MS 2000        // bounded — see sync_ntp()
-
-// Requests a clock sync from NTP_SERVER. Passing it for all three of
-// configTime()'s server slots (instead of leaning on its pool.ntp.org /
-// time.nist.gov defaults for the other two) keeps this from ever depending
-// on internet access — every other address in this project is LAN-local too.
-void sync_ntp() {
-  Serial.printf("NTP: syncing from %s\n", NTP_SERVER);
-  configTime(0, 0, NTP_SERVER, NTP_SERVER, NTP_SERVER);
-  // configTime() only *starts* the SNTP client — the reply arrives
-  // asynchronously, so a request that fires right after this (the startup
-  // log, on first connect) can read time(nullptr) before the first reply
-  // has landed. Observed in practice as localtime=2 (uptime, not a real
-  // epoch) on that very first request. Wait briefly for it to look synced;
-  // if the server doesn't answer in time, proceed anyway — localtime is
-  // already best-effort everywhere else in this file.
-  uint32_t t0 = millis();
-  while (time(nullptr) < NTP_SANE_EPOCH && millis() - t0 < NTP_SYNC_WAIT_MS) {
-    delay(50);
-  }
-  last_ntp_sync_ms = millis();
-}
-
 void wifi_connect() {
   if (WiFi.status() == WL_CONNECTED) return;
   Serial.printf("WiFi: connecting to %s...\n", WIFI_SSID);
@@ -111,7 +78,6 @@ void wifi_connect() {
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT_MS) delay(200);
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("WiFi: %s\n", WiFi.localIP().toString().c_str());
-    sync_ntp();
     if (!startup_log_sent) {
       // Fire-and-forget, right here rather than in setup(), so it fires
       // whichever call happens to be the one that first gets us online —
@@ -138,10 +104,6 @@ void run_housekeeping() {
     wifi_connect();
   }
 
-  if (WiFi.status() == WL_CONNECTED && millis() - last_ntp_sync_ms >= NTP_RESYNC_INTERVAL_MS) {
-    sync_ntp();
-  }
-
   if (door_is_open && !short_open_alerted &&
       millis() - door_opened_at_ms >= SHORT_OPEN_THRESHOLD_SECONDS * 1000UL) {
     short_open_alerted = true;
@@ -157,10 +119,8 @@ void run_housekeeping() {
   }
 }
 
-// Performs an HTTP GET against `base_url` plus a localtime=<epoch seconds>
-// param reporting this node's current time (query string or bare path,
-// either is fine — the separator is chosen to fit). Reconnects WiFi first
-// if needed; if that fails, logs it and gives up — no retry on the HTTP
+// Performs an HTTP GET against `base_url`. Reconnects WiFi first if
+// needed; if that fails, logs it and gives up — no retry on the HTTP
 // side, a failed request just gets logged and dropped.
 void http_get(const char *base_url) {
   wifi_connect();
@@ -169,14 +129,10 @@ void http_get(const char *base_url) {
     return;
   }
 
-  char url[320];
-  const char *sep = strchr(base_url, '?') ? "&" : "?";
-  snprintf(url, sizeof(url), "%s%slocaltime=%ld", base_url, sep, (long)time(nullptr));
-
-  Serial.printf("GET %s\n", url);
+  Serial.printf("GET %s\n", base_url);
 
   HTTPClient http;
-  http.begin(url);
+  http.begin(base_url);
   http.setReuse(false);
   int code = http.GET();
   Serial.printf("Response: %d\n", code);

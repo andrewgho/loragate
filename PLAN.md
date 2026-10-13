@@ -325,6 +325,19 @@ catch anything the table missed.
 - The wake/sleep state machine and door-event packet types above are
   implemented in `tx/tx.ino`. Still missing from that firmware: battery
   voltage via the ADS1115 (see below) and, if added, DS3231 read-on-wake.
+- **`rx/rx.ino` no longer syncs NTP or reports `localtime=`** — removed
+  rather than fixed. The original intent was a stepping stone toward
+  reconstructing the actual door-event time (a wire-protocol `age` field
+  set by tx from its own wake-to-transmit `millis()`, used by rx to back-
+  calculate an event timestamp), but that gap is usually 0-1 seconds at
+  the radio level and gets swamped by the notification channel's own
+  unpredictable latency (a Discord bot, currently) regardless — not worth
+  the wire-format and firmware complexity for what it would buy. If this
+  gets revisited, note that rx wouldn't need its own synced clock for it
+  either: the monitoring server already timestamps every incoming
+  request with its own trusted clock, so a relative age/offset carried on
+  the wire is enough for the server to back-calculate the estimated event
+  time itself, without rx needing to report an absolute epoch at all.
 - Sleep current is unmeasured — everything in the power budget is a
   datasheet or estimated figure.
 - `esp_sleep_enable_ext1_wakeup()` on D0 needs confirming against a real

@@ -27,7 +27,7 @@ designed but not wired into firmware yet (ADS1115 reading).
 | `tx-test/` | Transmitter, phase 1 | Link-layer proof of concept — fixed 10s timer, no sleep, no door events |
 | `rx-test/` | Receiver, phase 1 | Matching proof of concept — acks everything, reports seq/txno/rssi/snr |
 | `tx/` | Transmitter, phase 2 | Deep-sleep wake cycle on the real door-event protocol — implemented, not yet flashed |
-| `rx/` | Receiver, phase 2 | Forwards real events + its own held-open/staleness detection, NTP, WiFi reconnect — implemented, not yet flashed |
+| `rx/` | Receiver, phase 2 | Forwards real events + its own held-open/staleness detection, WiFi reconnect — implemented, not yet flashed |
 
 Arduino sketches can't share files across directories, so `lora_pins.h`
 and `lora_packet.h` are duplicated between each phase's tx/rx pair —
@@ -52,9 +52,8 @@ needs the macOS box with the hardware actually attached.
 `rx-test/local.h` and `rx/local.h` are both gitignored and differently
 shaped — `rx-test/local.h.example` has one URL template (4 placeholders:
 seq, txno, rssi, snr); `rx/local.h.example` has WiFi credentials plus
-several URL templates and the NTP server address (see README.md's "Phase
-2 protocol" for the full field list). Don't confuse the two when setting
-up a fresh checkout.
+several URL templates (see README.md's "Phase 2 protocol" for the full
+field list). Don't confuse the two when setting up a fresh checkout.
 
 ## Testing
 
@@ -124,9 +123,9 @@ up a fresh checkout.
   `tx.ino` should stay the thin I/O shell around it.
 - **rx's `run_housekeeping()` ticks every loop() iteration** (throttled
   internally), not just when a radio packet arrives — this is what makes
-  the daily NTP resync, the 45s door-open-past check, the
-  transmission-staleness alert, and the proactive WiFi reconnect possible
-  without needing an incoming packet to trigger them.
+  the 45s door-open-past check, the transmission-staleness alert, and the
+  proactive WiFi reconnect possible without needing an incoming packet to
+  trigger them.
 - **The transmission-staleness alert's silence *clock* resets on any
   radio reception, but its one-shot alert *latch* only clears on a
   recognized packet type.** A CRC-failed or unrecognized reception means
