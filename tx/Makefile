@@ -1,5 +1,16 @@
-FQBN      = esp32:esp32:XIAO_ESP32C6
-DBG_FQBN  = esp32:esp32:XIAO_ESP32C6:DebugLevel=info
+# CDCOnBoot=default routes Serial to hardware UART0 (D6/D7 — confirmed
+# unused by lora_pins.h) instead of native USB CDC. Native USB doesn't
+# survive deep sleep and nobody's plugged into it in the field anyway;
+# UART0 does survive it (with an external FTDI adapter) and is what made
+# the brownout/RTC_NOINIT_ATTR investigation possible in the first place.
+# Standard for production builds; DEBUG builds keep CDCOnBoot=cdc since
+# that's the "USB plugged in, monitor right there" case — one cable for
+# both flashing and monitoring, no separate FTDI adapter needed.
+FQBN      = esp32:esp32:XIAO_ESP32C6:CDCOnBoot=default
+DBG_FQBN  = esp32:esp32:XIAO_ESP32C6:DebugLevel=info,CDCOnBoot=cdc
+# Monitoring a production (non-debug) build means pointing this at the
+# FTDI adapter's device path, not the native USB one -- there's no native
+# USB connection to monitor on a build that deep sleeps.
 PORT     ?= /dev/cu.usbmodem1101
 SKETCH    = $(notdir $(CURDIR))
 BUILD_DIR = build

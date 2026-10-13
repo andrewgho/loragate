@@ -39,10 +39,21 @@ Repo-root `Makefile`: `make compile` (all four sketches, no upload),
 `make test` (see "Testing"), `make flash-tx`/`make flash-rx` (flash
 `tx-test`/`rx-test`), `make clean`. Each sketch directory also has its
 own Makefile (`make flash`, `make debug`, `make monitor`, `make clean`,
-`PORT=... make flash`) — `tx-test`'s and `tx`'s are identical, likewise
-`rx-test`'s and `rx`'s. `make debug` substitutes a `delay()` +
-`esp_restart()` loop for deep sleep so the USB port stays up for
-monitoring.
+`PORT=... make flash`) — `rx-test`'s and `rx`'s are identical. `tx-test`'s
+and `tx`'s differ in one respect: `tx/Makefile`'s production build
+(`FQBN`) sets `CDCOnBoot=default`, routing `Serial` to hardware UART0
+instead of native USB CDC — native USB doesn't survive deep sleep and
+nobody's plugged into it in the field anyway, while UART0 (with an
+external FTDI adapter) does, which is what made the brownout/
+`RTC_NOINIT_ATTR` investigation possible (see `PLAN.md`'s "Reset
+diagnostics"). `tx/Makefile`'s debug build (`DBG_FQBN`) keeps
+`CDCOnBoot=cdc` — one USB cable for both flashing and monitoring when
+someone's actually sitting there with it plugged in. `tx-test` never
+deep sleeps, so it has no reason to differ from the native-USB default.
+Monitoring a production `tx` build means pointing `PORT` at the FTDI
+adapter's device path, not the native USB one. `make debug` substitutes
+a `delay()` + `esp_restart()` loop for deep sleep so the USB port stays
+up for monitoring.
 
 Toolchain: `arduino-cli` + the ESP32 board package + `RadioLib` — same
 setup as the `thermometer` repo. It's installed on this Linux dev box
