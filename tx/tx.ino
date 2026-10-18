@@ -184,8 +184,24 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   // takes a bitmask instead of a pin number, and (per its own doc comment)
   // fully replaces the previous ext1 config on every call, which is exactly
   // what's needed to flip the wakeup level between wakes.
-  esp_sleep_enable_ext1_wakeup(1ULL << REED_PIN,
-                                door_open ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+  //
+  // *** DIAGNOSTIC-ONLY, NOT FOR REAL USE: ext1 arming disabled below. ***
+  // Live PPK2 data showed sleep current with the door closed isn't a flat
+  // 318uA -- it's a ~30uA floor (at/better than the ~41-44uA budget) with
+  // periodic ~1.5mA spikes every ~750us. Open (no low-impedance short on
+  // REED_PIN) shows no such spikes. Leading theory: ext1 can't afford a
+  // continuously-active comparator for the whole sleep duration, so it
+  // periodically re-samples the pin instead, and each sample's cost
+  // depends on what it finds -- cheap against the open circuit's
+  // high-impedance pull-up, expensive against the closed switch's
+  // low-impedance short to ground. Commenting out ext1 entirely (timer
+  // wakeup only) with the door still closed (REED_PIN still shorted low)
+  // isolates whether the spikes are specifically tied to ext1 actively
+  // monitoring that shorted pin, or something unrelated. This build does
+  // NOT wake on a real door event -- bench/PPK2 measurement only, revert
+  // before flashing anything meant to actually run in the field.
+  // esp_sleep_enable_ext1_wakeup(1ULL << REED_PIN,
+  //                               door_open ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
   esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
   esp_deep_sleep_start();
 #endif
