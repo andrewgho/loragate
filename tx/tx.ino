@@ -150,24 +150,7 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   delay(seconds * 1000UL);
   esp_restart();
 #else
-  // DIAGNOSTIC-ONLY: radio.sleep() also skipped now, not just
-  // radio.begin()/SPI.begin() (previous commit). That earlier version
-  // left radio.sleep() calling into RadioLib, which still sends a real
-  // SPI command assuming SPI is already configured -- but SPI.begin()
-  // never ran this time, so that command went out as garbled,
-  // unconfigured signaling onto GPIO pins reaching a chip that's
-  // genuinely powered and listening (unlike the fully-unplugged test,
-  // where the same garbled signal just went into open air). Result was
-  // ~2.4-3.0mA oscillating smoothly at ~17ms, suspiciously close to the
-  // SX1262 datasheet's Synthesizer/FS mode figure (~2.1mA, DC-DC) -- a
-  // corrupted SetSleep command landing on a real chip could plausibly
-  // kick it into FS mode or leave it hunting between states, which
-  // would explain both the magnitude and the smooth (not spiky)
-  // waveform. That's a self-inflicted artifact of this test being
-  // internally inconsistent, not a finding about the board's passive
-  // presence. Skipping this call too makes it genuinely clean: board
-  // powered, but not a single bit of SPI traffic sent to it all wake.
-  // radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
+  radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
 
   // EXPERIMENTAL, NSS-only test (see PLAN.md's power budget / live PPK2
   // measurements): the SX1262 treats a falling edge on NSS as a
@@ -385,23 +368,11 @@ void setup() {
   pinMode(LORA_RFSW, OUTPUT);
   digitalWrite(LORA_RFSW, HIGH);
 
-  // DIAGNOSTIC-ONLY: radio.begin()/SPI.begin() skipped entirely below,
-  // forcing the existing failure path unconditionally -- Wio board stays
-  // physically plugged in this time (see the previous commit's unplugged
-  // test, which showed clean ~20uA sleep with no spikes and no open/
-  // closed asymmetry either way). That result leaves two explanations
-  // open: (1) the board's mere electrical presence is enough on its own,
-  // or (2) something that only happens once radio.begin() succeeds and
-  // we go on to actually configure/use the radio (setDio2AsRfSwitch(),
-  // a real transmit) is the real trigger. This isolates which: board
-  // physically present, but never touched by firmware -- not even a
-  // single SPI transaction attempted. Revert once answered.
-  int state = RADIOLIB_ERR_CHIP_NOT_FOUND;
-  // SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
-  // state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ,
-  //                      LORA_SPREADING_FACTOR, LORA_CODING_RATE,
-  //                      LORA_SYNC_WORD, LORA_TX_POWER_DBM,
-  //                      LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
+  int state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ,
+                           LORA_SPREADING_FACTOR, LORA_CODING_RATE,
+                           LORA_SYNC_WORD, LORA_TX_POWER_DBM,
+                           LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin failed: %d (check lora_pins.h wiring)\n", state);
     bool actual_open = read_debounced_state();
