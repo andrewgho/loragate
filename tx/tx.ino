@@ -152,21 +152,21 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
 #else
   radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
 
-  // EXPERIMENTAL, now testing NSS + RFSW together: ESP32-C6 does not
-  // retain a GPIO's driven level across deep sleep unless held, and two
-  // floating pins were left exposed to that. Holding NSS alone already
-  // confirmed the leading theory -- live PPK2 measurement dropped from
-  // ~1.5mA to ~318uA, consistent with the SX1262 treating NSS floating as
-  // a falling edge (its documented wake-from-SLEEP trigger, datasheet
-  // section 8.2.2) and sitting in STDBY (0.6-0.8mA typ) instead of true
-  // SLEEP (~1uA) -- but 318uA is still well above the ~41-44uA budgeted
-  // target, so something else is also elevated. RFSW ("RF switch /CTRL"
-  // per lora_pins.h) is the next-most-likely candidate: unlike the other
-  // unretained SPI lines (SCK/MOSI/MISO), which a deselected SPI slave
-  // should mostly ignore once NSS is correctly held, RFSW plausibly gates
-  // something closer to an analog bias or switch-driver circuit on the
-  // Wio-SX1262 module, where floating mid-level (rather than a clean
-  // digital HIGH) could leave real current flowing.
+  // EXPERIMENTAL. Holding NSS alone confirmed the leading theory: ESP32-C6
+  // doesn't retain a GPIO's driven level across deep sleep unless held,
+  // NSS floating looks like a falling edge (the SX1262's documented
+  // wake-from-SLEEP trigger, datasheet section 8.2.2), and live PPK2
+  // measurement dropped from ~1.5mA to ~318uA once it was held -- but
+  // that's still well above the ~41-44uA budgeted target.
+  //
+  // Holding RFSW *HIGH* too was tried next and made things slightly
+  // *worse* (~368uA) -- actively keeping the RF switch circuit enabled
+  // through sleep costs real current, more than whatever undefined state
+  // it floats to on its own. HIGH is the level lora_pins.h documents as
+  // the "awake, radio in use" level, so that's not surprising in
+  // hindsight. LOW is the only other defined level RFSW has never
+  // actually been driven to; testing whether it's this switch's genuine
+  // disable/low-power state rather than just reverting to floating.
   //
   // gpio_hold_en() alone is sufficient here -- unlike classic ESP32/S2/S3,
   // where it additionally needs a global gpio_deep_sleep_hold_en() call,
@@ -175,6 +175,7 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   // global call doesn't even exist in this chip's headers (confirmed by a
   // build error, not assumed).
   gpio_hold_en((gpio_num_t)LORA_NSS);
+  digitalWrite(LORA_RFSW, LOW);
   gpio_hold_en((gpio_num_t)LORA_RFSW);
 
   // The ESP32-C6 has no ext0 wakeup (SOC_PM_SUPPORT_EXT0_WAKEUP is unset in
