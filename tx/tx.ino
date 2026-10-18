@@ -42,7 +42,6 @@
 #include <esp_system.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
-#include "soc/rtc.h"  // DIAGNOSTIC: rtc_clk_slow_src_get() -- see setup()
 #include "lora_pins.h"
 #include "lora_packet.h"
 #include "door_wake_logic.h"
@@ -153,21 +152,17 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
 #else
   radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
 
-  // EXPERIMENTAL. Holding NSS alone confirmed the leading theory: ESP32-C6
-  // doesn't retain a GPIO's driven level across deep sleep unless held,
-  // NSS floating looks like a falling edge (the SX1262's documented
-  // wake-from-SLEEP trigger, datasheet section 8.2.2), and live PPK2
-  // measurement dropped from ~1.5mA to ~318uA once it was held -- but
-  // that's still well above the ~41-44uA budgeted target.
-  //
-  // Holding RFSW *HIGH* too was tried next and made things slightly
-  // *worse* (~368uA) -- actively keeping the RF switch circuit enabled
-  // through sleep costs real current, more than whatever undefined state
-  // it floats to on its own. HIGH is the level lora_pins.h documents as
-  // the "awake, radio in use" level, so that's not surprising in
-  // hindsight. LOW is the only other defined level RFSW has never
-  // actually been driven to; testing whether it's this switch's genuine
-  // disable/low-power state rather than just reverting to floating.
+  // EXPERIMENTAL, NSS-only test (see PLAN.md's power budget / live PPK2
+  // measurements): the SX1262 treats a falling edge on NSS as a
+  // wake-from-SLEEP trigger (datasheet section 8.2.2), and the ESP32-C6
+  // does not retain a GPIO's driven level across deep sleep unless held
+  // — so without this, NSS resets/floats right as we enter sleep, which
+  // looks exactly like that falling edge and pulls the radio back out of
+  // its true SLEEP (~1uA) into STDBY (0.6-0.8mA typ) for the whole sleep
+  // duration, not just a glitch. Measured idle current was ~1.5mA,
+  // consistent with this. Holding NSS alone first to confirm before also
+  // holding LORA_RFSW (same root cause, different pin, harder to
+  // quantify its own contribution without this isolated first).
   //
   // gpio_hold_en() alone is sufficient here -- unlike classic ESP32/S2/S3,
   // where it additionally needs a global gpio_deep_sleep_hold_en() call,
@@ -176,8 +171,6 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   // global call doesn't even exist in this chip's headers (confirmed by a
   // build error, not assumed).
   gpio_hold_en((gpio_num_t)LORA_NSS);
-  digitalWrite(LORA_RFSW, LOW);
-  gpio_hold_en((gpio_num_t)LORA_RFSW);
 
   // The ESP32-C6 has no ext0 wakeup (SOC_PM_SUPPORT_EXT0_WAKEUP is unset in
   // its soc_caps.h, unlike classic ESP32/S2/S3) — PLAN.md's original sketch
@@ -185,24 +178,8 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   // takes a bitmask instead of a pin number, and (per its own doc comment)
   // fully replaces the previous ext1 config on every call, which is exactly
   // what's needed to flip the wakeup level between wakes.
-  //
-  // *** DIAGNOSTIC-ONLY, NOT FOR REAL USE: ext1 arming disabled below. ***
-  // Live PPK2 data showed sleep current with the door closed isn't a flat
-  // 318uA -- it's a ~30uA floor (at/better than the ~41-44uA budget) with
-  // periodic ~1.5mA spikes every ~750us. Open (no low-impedance short on
-  // REED_PIN) shows no such spikes. Leading theory: ext1 can't afford a
-  // continuously-active comparator for the whole sleep duration, so it
-  // periodically re-samples the pin instead, and each sample's cost
-  // depends on what it finds -- cheap against the open circuit's
-  // high-impedance pull-up, expensive against the closed switch's
-  // low-impedance short to ground. Commenting out ext1 entirely (timer
-  // wakeup only) with the door still closed (REED_PIN still shorted low)
-  // isolates whether the spikes are specifically tied to ext1 actively
-  // monitoring that shorted pin, or something unrelated. This build does
-  // NOT wake on a real door event -- bench/PPK2 measurement only, revert
-  // before flashing anything meant to actually run in the field.
-  // esp_sleep_enable_ext1_wakeup(1ULL << REED_PIN,
-  //                               door_open ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+  esp_sleep_enable_ext1_wakeup(1ULL << REED_PIN,
+                                door_open ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
   esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
   esp_deep_sleep_start();
 #endif
@@ -333,45 +310,8 @@ void setup() {
 
   Serial.println("loragate tx");
 
-  // DIAGNOSTIC, pure instrumentation, not yet a fix: GPIO0/REED_PIN is
-  // also multiplexed as XTAL_32K_P, one of the two pins for an *external*
-  // 32.768kHz crystal input to the RTC slow clock -- this board has no
-  // such crystal anywhere. If RTC_SLOW_CLK's source were somehow set to
-  // expect one there (SOC_RTC_SLOW_CLK_SRC_XTAL32K = 1) instead of the
-  // internal RC oscillator (SOC_RTC_SLOW_CLK_SRC_RC_SLOW = 0) or the
-  // internal 32k RC (SOC_RTC_SLOW_CLK_SRC_RC32K = 2), that's a documented
-  // general ESP32 pitfall -- repeatedly attempting to start up a crystal
-  // that isn't there costs real, ongoing current, not just ~1uA the way
-  // a working external crystal would. Print which source is actually
-  // active before guessing further; not yet confirmed either way.
-  Serial.printf("RTC slow clk src: %d (0=RC_SLOW, 1=XTAL32K, 2=RC32K, 3=OSC_SLOW)\n",
-                (int)rtc_clk_slow_src_get());
-
   pinMode(REED_PIN, INPUT);  // external 1M pull-up to 3V3 (WIRING.md) — no
                              // internal pull-up, matching the production circuit
-
-  // EXPERIMENTAL: REED_PIN is one of the C6's 8 RTC-capable GPIOs (required
-  // for ext1 wakeup) and has its own RTC/LP-IO-domain pull-up/pulldown
-  // enable bits, entirely separate from the regular digital-GPIO pull
-  // config pinMode() just set above -- so pinMode(INPUT) alone may not be
-  // disabling them. Leading theory for the still-unexplained ~297uA sleep
-  // current gap after the NSS/RFSW fixes: live PPK2 measurement found
-  // sleep current at ~318uA while the door is closed but only ~21uA
-  // (matching the budgeted target) while open. A redundant internal pull
-  // sitting in parallel with the external 1M pull-up (WIRING.md) would be
-  // invisible while open (no completed circuit, no current either way)
-  // but would draw real current once the switch closes and completes a
-  // path to ground -- exactly this asymmetry. PLAN.md's own power budget
-  // already flags "~73uA" as what an internal pull-up alone would cost
-  // here, which is why the design uses an external 1M instead; this
-  // makes sure neither internal pull is left on to stack with it.
-  // gpio_pullup_dis()/gpio_pulldown_dis() (not the rtc_gpio_* equivalents)
-  // per their own doc comment, since those also work for RTC IOs without
-  // needing rtc_gpio_init() to reroute the pin through the RTC IOMUX --
-  // which could interfere with the normal pinMode()/digitalRead() path
-  // used while awake.
-  gpio_pullup_dis((gpio_num_t)REED_PIN);
-  gpio_pulldown_dis((gpio_num_t)REED_PIN);
 
   // Detect an abnormal reset, or persisted state that didn't survive
   // despite a reset reason claiming it should have, as early as possible
@@ -419,12 +359,11 @@ void setup() {
     pending_diagnostic_info = RTC_DATA_LOSS_INFO;
   }
 
-  // Release the NSS/RFSW holds from the last sleep (see
-  // enter_safe_deep_sleep()) before driving them fresh below — a no-op if
-  // they were never held (e.g. this wake's actual cause was
-  // ESP.restart(), or this is the very first boot ever).
+  // Release the NSS hold from the last sleep (see enter_safe_deep_sleep())
+  // before SPI.begin() drives it fresh — a no-op if it was never held
+  // (e.g. this wake's actual cause was ESP.restart(), or this is the very
+  // first boot ever).
   gpio_hold_dis((gpio_num_t)LORA_NSS);
-  gpio_hold_dis((gpio_num_t)LORA_RFSW);
 
   pinMode(LORA_RFSW, OUTPUT);
   digitalWrite(LORA_RFSW, HIGH);
