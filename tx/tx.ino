@@ -319,6 +319,29 @@ void setup() {
   pinMode(REED_PIN, INPUT);  // external 1M pull-up to 3V3 (WIRING.md) — no
                              // internal pull-up, matching the production circuit
 
+  // EXPERIMENTAL: REED_PIN is one of the C6's 8 RTC-capable GPIOs (required
+  // for ext1 wakeup) and has its own RTC/LP-IO-domain pull-up/pulldown
+  // enable bits, entirely separate from the regular digital-GPIO pull
+  // config pinMode() just set above -- so pinMode(INPUT) alone may not be
+  // disabling them. Leading theory for the still-unexplained ~297uA sleep
+  // current gap after the NSS/RFSW fixes: live PPK2 measurement found
+  // sleep current at ~318uA while the door is closed but only ~21uA
+  // (matching the budgeted target) while open. A redundant internal pull
+  // sitting in parallel with the external 1M pull-up (WIRING.md) would be
+  // invisible while open (no completed circuit, no current either way)
+  // but would draw real current once the switch closes and completes a
+  // path to ground -- exactly this asymmetry. PLAN.md's own power budget
+  // already flags "~73uA" as what an internal pull-up alone would cost
+  // here, which is why the design uses an external 1M instead; this
+  // makes sure neither internal pull is left on to stack with it.
+  // gpio_pullup_dis()/gpio_pulldown_dis() (not the rtc_gpio_* equivalents)
+  // per their own doc comment, since those also work for RTC IOs without
+  // needing rtc_gpio_init() to reroute the pin through the RTC IOMUX --
+  // which could interfere with the normal pinMode()/digitalRead() path
+  // used while awake.
+  gpio_pullup_dis((gpio_num_t)REED_PIN);
+  gpio_pulldown_dis((gpio_num_t)REED_PIN);
+
   // Detect an abnormal reset, or persisted state that didn't survive
   // despite a reset reason claiming it should have, as early as possible
   // — neither check needs the radio, so neither is missed if
