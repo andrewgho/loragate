@@ -41,6 +41,7 @@
 #include <RadioLib.h>
 #include <esp_system.h>
 #include <esp_sleep.h>
+#include <driver/gpio.h>
 #include "lora_pins.h"
 #include "lora_packet.h"
 #include "door_wake_logic.h"
@@ -150,6 +151,26 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   esp_restart();
 #else
   radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
+
+  // EXPERIMENTAL, NSS-only test (see PLAN.md's power budget / live PPK2
+  // measurements): the SX1262 treats a falling edge on NSS as a
+  // wake-from-SLEEP trigger (datasheet section 8.2.2), and the ESP32-C6
+  // does not retain a GPIO's driven level across deep sleep unless held
+  // — so without this, NSS resets/floats right as we enter sleep, which
+  // looks exactly like that falling edge and pulls the radio back out of
+  // its true SLEEP (~1uA) into STDBY (0.6-0.8mA typ) for the whole sleep
+  // duration, not just a glitch. Measured idle current was ~1.5mA,
+  // consistent with this. Holding NSS alone first to confirm before also
+  // holding LORA_RFSW (same root cause, different pin, harder to
+  // quantify its own contribution without this isolated first).
+  //
+  // gpio_hold_en() alone is sufficient here -- unlike classic ESP32/S2/S3,
+  // where it additionally needs a global gpio_deep_sleep_hold_en() call,
+  // ESP32-C6 sets SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP, meaning a single
+  // pin's hold already takes effect across deep sleep on its own; that
+  // global call doesn't even exist in this chip's headers (confirmed by a
+  // build error, not assumed).
+  gpio_hold_en((gpio_num_t)LORA_NSS);
 
   // The ESP32-C6 has no ext0 wakeup (SOC_PM_SUPPORT_EXT0_WAKEUP is unset in
   // its soc_caps.h, unlike classic ESP32/S2/S3) — PLAN.md's original sketch
@@ -337,6 +358,12 @@ void setup() {
     diagnostic_pending = true;
     pending_diagnostic_info = RTC_DATA_LOSS_INFO;
   }
+
+  // Release the NSS hold from the last sleep (see enter_safe_deep_sleep())
+  // before SPI.begin() drives it fresh — a no-op if it was never held
+  // (e.g. this wake's actual cause was ESP.restart(), or this is the very
+  // first boot ever).
+  gpio_hold_dis((gpio_num_t)LORA_NSS);
 
   pinMode(LORA_RFSW, OUTPUT);
   digitalWrite(LORA_RFSW, HIGH);
