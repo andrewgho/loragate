@@ -42,6 +42,7 @@
 #include <esp_system.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
+#include "soc/rtc.h"  // DIAGNOSTIC: rtc_clk_slow_src_get() -- see setup()
 #include "lora_pins.h"
 #include "lora_packet.h"
 #include "door_wake_logic.h"
@@ -331,6 +332,20 @@ void setup() {
 #endif
 
   Serial.println("loragate tx");
+
+  // DIAGNOSTIC, pure instrumentation, not yet a fix: GPIO0/REED_PIN is
+  // also multiplexed as XTAL_32K_P, one of the two pins for an *external*
+  // 32.768kHz crystal input to the RTC slow clock -- this board has no
+  // such crystal anywhere. If RTC_SLOW_CLK's source were somehow set to
+  // expect one there (SOC_RTC_SLOW_CLK_SRC_XTAL32K = 1) instead of the
+  // internal RC oscillator (SOC_RTC_SLOW_CLK_SRC_RC_SLOW = 0) or the
+  // internal 32k RC (SOC_RTC_SLOW_CLK_SRC_RC32K = 2), that's a documented
+  // general ESP32 pitfall -- repeatedly attempting to start up a crystal
+  // that isn't there costs real, ongoing current, not just ~1uA the way
+  // a working external crystal would. Print which source is actually
+  // active before guessing further; not yet confirmed either way.
+  Serial.printf("RTC slow clk src: %d (0=RC_SLOW, 1=XTAL32K, 2=RC32K, 3=OSC_SLOW)\n",
+                (int)rtc_clk_slow_src_get());
 
   pinMode(REED_PIN, INPUT);  // external 1M pull-up to 3V3 (WIRING.md) — no
                              // internal pull-up, matching the production circuit
