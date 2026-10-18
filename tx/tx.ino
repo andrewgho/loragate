@@ -150,7 +150,24 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   delay(seconds * 1000UL);
   esp_restart();
 #else
-  radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
+  // DIAGNOSTIC-ONLY: radio.sleep() also skipped now, not just
+  // radio.begin()/SPI.begin() (previous commit). That earlier version
+  // left radio.sleep() calling into RadioLib, which still sends a real
+  // SPI command assuming SPI is already configured -- but SPI.begin()
+  // never ran this time, so that command went out as garbled,
+  // unconfigured signaling onto GPIO pins reaching a chip that's
+  // genuinely powered and listening (unlike the fully-unplugged test,
+  // where the same garbled signal just went into open air). Result was
+  // ~2.4-3.0mA oscillating smoothly at ~17ms, suspiciously close to the
+  // SX1262 datasheet's Synthesizer/FS mode figure (~2.1mA, DC-DC) -- a
+  // corrupted SetSleep command landing on a real chip could plausibly
+  // kick it into FS mode or leave it hunting between states, which
+  // would explain both the magnitude and the smooth (not spiky)
+  // waveform. That's a self-inflicted artifact of this test being
+  // internally inconsistent, not a finding about the board's passive
+  // presence. Skipping this call too makes it genuinely clean: board
+  // powered, but not a single bit of SPI traffic sent to it all wake.
+  // radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
 
   // EXPERIMENTAL, NSS-only test (see PLAN.md's power budget / live PPK2
   // measurements): the SX1262 treats a falling edge on NSS as a
