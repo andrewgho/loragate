@@ -368,11 +368,23 @@ void setup() {
   pinMode(LORA_RFSW, OUTPUT);
   digitalWrite(LORA_RFSW, HIGH);
 
-  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
-  int state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ,
-                           LORA_SPREADING_FACTOR, LORA_CODING_RATE,
-                           LORA_SYNC_WORD, LORA_TX_POWER_DBM,
-                           LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
+  // DIAGNOSTIC-ONLY: radio.begin()/SPI.begin() skipped entirely below,
+  // forcing the existing failure path unconditionally -- Wio board stays
+  // physically plugged in this time (see the previous commit's unplugged
+  // test, which showed clean ~20uA sleep with no spikes and no open/
+  // closed asymmetry either way). That result leaves two explanations
+  // open: (1) the board's mere electrical presence is enough on its own,
+  // or (2) something that only happens once radio.begin() succeeds and
+  // we go on to actually configure/use the radio (setDio2AsRfSwitch(),
+  // a real transmit) is the real trigger. This isolates which: board
+  // physically present, but never touched by firmware -- not even a
+  // single SPI transaction attempted. Revert once answered.
+  int state = RADIOLIB_ERR_CHIP_NOT_FOUND;
+  // SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
+  // state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ,
+  //                      LORA_SPREADING_FACTOR, LORA_CODING_RATE,
+  //                      LORA_SYNC_WORD, LORA_TX_POWER_DBM,
+  //                      LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin failed: %d (check lora_pins.h wiring)\n", state);
     bool actual_open = read_debounced_state();
