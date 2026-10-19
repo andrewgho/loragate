@@ -1,41 +1,15 @@
-// loragate tx — phase-2 door-sensor transmitter, deep-sleep cycle.
+// loragate tx — door-sensor transmitter, deep-sleep cycle.
 //
-// Deep sleeps by default. Wakes on any reed-switch (D0) edge and reports
-// the new door state. After an open edge, wakes once more at
-// HELD_OPEN_CHECK_SECONDS to re-verify against the real hardware state and
-// report it, if the door's still open then — a one-shot "someone probably
-// forgot about the door" check, not a repeating one: re-arming that same
-// 300s timer for as long as the door stayed open would mean ~280 wakes/day
-// of a left-open door, which is real battery budget (PLAN.md's power
-// budget) for a condition that one check has already reported. Once that
-// one check has fired (or if it never needed to, because the door closed
-// first), wakes fall back to the regular HEARTBEAT_INTERVAL_SECONDS timer
-// if nothing else has happened by then — but since every branch below
-// already transmits something, that's really just "transmit at least this
-// often", not "transmit a heartbeat specifically every hour".
+// Deep sleeps by default; each wake runs setup() once, decides what (if
+// anything) to transmit, and goes back to sleep from inside it — there's
+// no persistent loop(). See README.md's "Software" section for the wake
+// behavior (reed-switch edge vs. held-open check vs. heartbeat) and
+// "History" for why some of this looks the way it does.
 //
-// The receiver separately raises its own "door open past 45s" alert from
-// the initial open event alone, on its own clock — see rx/rx.ino and
-// README.md's "Phase 2 protocol". That's what covers "someone just opened
-// the door"; this file's HELD_OPEN_CHECK_SECONDS is the slower, hardware
-// re-verified "still open, probably forgotten" follow-up.
-//
-// RTC_NOINIT_ATTR state survives both deep sleep *and* a restart (see
-// rtc_checksum.h) so the seq counter and committed door state carry
-// across wake cycles; everything else (SPI, radio) is reinitialized from
-// scratch each wake, same as tx-test.ino. There is no persistent loop()
-// here — each wake runs setup() once, decides what (if anything) to
-// transmit, and goes back to sleep from inside it.
-//
-// Also reports a PKT_DIAGNOSTIC if a wake was caused by anything other
-// than a routine deep-sleep wake or our own deliberate restart, or if
-// persisted state turns out to have been lost despite the reset reason
-// claiming one of those two routine causes — detected as early as
-// possible (before radio.begin()) and carried in diagnostic_pending
-// across however many wakes it takes for the radio to actually come up.
-// See PLAN.md's "Reset diagnostics" for why this exists (a live brownout
-// investigation that turned up a real RTC_DATA_ATTR-vs-RTC_NOINIT_ATTR
-// bug along the way).
+// next_seq/wake_state/diagnostic_pending/pending_diagnostic_info are
+// RTC_NOINIT_ATTR (survives both deep sleep and a restart — see
+// rtc_checksum.h); everything else (SPI, radio) is reinitialized from
+// scratch each wake.
 
 #include <SPI.h>
 #include <RadioLib.h>
@@ -54,13 +28,12 @@
 #define DEBOUNCE_MS           50
 
 // How long the door can stay open before we proactively re-report it —
-// once per open episode, not repeatedly (see the file header comment).
+// once per open episode, not repeatedly (README.md's "Software" section).
 #define HELD_OPEN_CHECK_SECONDS    300
 
 // How often to transmit *something* when the door isn't doing that on its
-// own. Configurable; any door open/close/held-open event resets this clock
-// too, since it serves the same "transmitter is alive" purpose — see the
-// wake-cause handling in setup().
+// own. Any door open/close/held-open event resets this clock too, since
+// it serves the same "transmitter is alive" purpose.
 #define HEARTBEAT_INTERVAL_SECONDS (60UL * 60UL)
 
 #define MAX_RETRIES         5
@@ -76,42 +49,32 @@
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
-// RTC_NOINIT_ATTR, not RTC_DATA_ATTR: these need to survive a restart
-// (ESP.restart(), e.g. the rapid-slam guard below), and RTC_DATA_ATTR is
-// only documented to survive deep sleep, not a restart — confirmed the
-// hard way via live testing, then directly against esp_attr.h's own doc
-// comments. No initializers here: .rtc_noinit is skipped entirely by the
-// bootloader's startup init, so any "= ..." would never actually run —
-// real starting values are established explicitly in setup() the first
-// time persisted_checksum fails to validate. See PLAN.md's "Reset
-// diagnostics" and rtc_checksum.h.
+// RTC_NOINIT_ATTR, not RTC_DATA_ATTR: these need to survive a restart too
+// (ESP.restart(), e.g. the rapid-slam guard below) — see rtc_checksum.h.
+// No initializers here: .rtc_noinit is skipped by the bootloader's
+// startup init, so any "= ..." would never run; real starting values are
+// established in setup() the first time persisted_checksum fails to
+// validate.
 RTC_NOINIT_ATTR uint32_t next_seq;
 RTC_NOINIT_ATTR DoorWakeState wake_state;  // see door_wake_logic.h
 
-// Set as soon as an abnormal reset is detected (no radio needed for that),
-// cleared only once PKT_DIAGNOSTIC has actually gone out. Needed because
-// detection and the ability to send are on different wakes whenever
-// radio.begin() fails on the wake right after the reset itself — plausible
-// since that's exactly when things are least likely to be settled — in
-// which case esp_reset_reason() has already moved on to describing a
-// routine cause by the time a later wake's radio finally comes up. See
-// PLAN.md's "Reset diagnostics".
+// Set as soon as an abnormal reset is detected (no radio needed for
+// that), cleared once PKT_DIAGNOSTIC actually goes out. Carried across
+// wakes separately from reset_reason because detection and the ability
+// to send can land on different wakes if radio.begin() fails right after
+// the reset itself.
 RTC_NOINIT_ATTR bool diagnostic_pending;
 RTC_NOINIT_ATTR uint8_t pending_diagnostic_info;
 
-// Covers next_seq/wake_state/diagnostic_pending/pending_diagnostic_info —
-// see rtc_checksum.h. Refreshed at the top of enter_safe_deep_sleep(), so
-// it always reflects this wake's final values before anything that might
-// restart or sleep; verified against (and, if it doesn't match, used to
-// trigger resetting those four back to known-safe values) early in
-// setup(), alongside the reset-reason check.
+// Checksum over the four fields above (see rtc_checksum.h) — refreshed at
+// the top of enter_safe_deep_sleep() so it always reflects this wake's
+// final values, verified against in setup() alongside the reset-reason
+// check.
 RTC_NOINIT_ATTR uint32_t persisted_checksum;
 
-// 255 isn't a real esp_reset_reason_t value (those top out well below
-// this) — used as PKT_DIAGNOSTIC's info when persisted_checksum doesn't
-// match despite a reset reason that claimed to be routine, which should
-// be impossible now but is worth a distinct, honest label if it ever
-// happens again. Must match RTC_DATA_LOSS_INFO in rx/rx.ino.
+// 255 isn't a real esp_reset_reason_t value — used as PKT_DIAGNOSTIC's
+// info when persisted_checksum doesn't match despite a reset reason that
+// claimed to be routine. Must match RTC_DATA_LOSS_INFO in rx/rx.ino.
 #define RTC_DATA_LOSS_INFO 255
 
 volatile bool rx_flag = false;
@@ -120,22 +83,17 @@ void IRAM_ATTR set_rx_flag() { rx_flag = true; }
 // Sleeps for `seconds`, waking early on a reed-switch edge (the opposite
 // level of `door_open`) or when the timer expires, whichever comes first.
 // Under -DDEBUG, substitutes a delay()+esp_restart() loop so USB/serial
-// stay up for monitoring (deep sleep powers down the USB peripheral) — same
-// convention as tx-test.ino.
+// stay up for monitoring (deep sleep powers down the USB peripheral).
 void enter_safe_deep_sleep(bool door_open, uint32_t seconds) __attribute__((noreturn));
 void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
-  // Refresh the checksum to match whatever next_seq/wake_state/etc. are
-  // right now, before anything below might restart or actually sleep —
-  // covers both outcomes of this function (the rapid-slam guard's
-  // ESP.restart() just below, and the real esp_deep_sleep_start() further
-  // down) from one place, so there's nothing to remember at each call site.
+  // Refresh before anything below might restart or sleep, covering both
+  // outcomes of this function from one place.
   persisted_checksum = compute_persisted_checksum(next_seq, wake_state, diagnostic_pending, pending_diagnostic_info);
 
   // Re-read the pin right before committing to sleep: if it changed since
   // we decided door_open, arming a wakeup edge for the *old* state would
-  // sleep through the transition that already happened (PLAN.md's
-  // rapid-slam guard). Restarting re-runs setup() against the pin's actual
-  // current state instead of sleeping through a missed edge.
+  // sleep through the transition that already happened. Restarting
+  // re-runs setup() against the pin's actual current state instead.
   delay(DEBOUNCE_MS);
   if ((digitalRead(REED_PIN) == HIGH) != door_open) {
     Serial.println("door moved while preparing to sleep; restarting to re-check");
@@ -150,34 +108,23 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   delay(seconds * 1000UL);
   esp_restart();
 #else
-  radio.sleep();  // explicit SX1262 sleep — ~2.5uA vs standby's more (PLAN.md power budget)
+  radio.sleep();  // explicit SX1262 SLEEP mode — ~2.5uA vs. STDBY's much more
 
-  // EXPERIMENTAL, NSS-only test (see PLAN.md's power budget / live PPK2
-  // measurements): the SX1262 treats a falling edge on NSS as a
-  // wake-from-SLEEP trigger (datasheet section 8.2.2), and the ESP32-C6
-  // does not retain a GPIO's driven level across deep sleep unless held
-  // — so without this, NSS resets/floats right as we enter sleep, which
-  // looks exactly like that falling edge and pulls the radio back out of
-  // its true SLEEP (~1uA) into STDBY (0.6-0.8mA typ) for the whole sleep
-  // duration, not just a glitch. Measured idle current was ~1.5mA,
-  // consistent with this. Holding NSS alone first to confirm before also
-  // holding LORA_RFSW (same root cause, different pin, harder to
-  // quantify its own contribution without this isolated first).
-  //
-  // gpio_hold_en() alone is sufficient here -- unlike classic ESP32/S2/S3,
-  // where it additionally needs a global gpio_deep_sleep_hold_en() call,
-  // ESP32-C6 sets SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP, meaning a single
-  // pin's hold already takes effect across deep sleep on its own; that
-  // global call doesn't even exist in this chip's headers (confirmed by a
-  // build error, not assumed).
+  // Hold NSS driven across deep sleep: the SX1262 wakes itself from SLEEP
+  // on an NSS falling edge (datasheet section 8.2.2), and the ESP32-C6
+  // lets a GPIO float as sleep begins unless its level is explicitly
+  // held — which looks exactly like that edge and keeps the radio in
+  // STDBY (0.6-0.8mA) for the whole sleep duration instead of true SLEEP.
+  // See README.md's power-budget History for the measurement trail.
+  // gpio_hold_en() alone is sufficient on the C6 — unlike classic
+  // ESP32/S2/S3, it doesn't also need a global gpio_deep_sleep_hold_en()
+  // call (that function doesn't exist in this chip's headers at all).
   gpio_hold_en((gpio_num_t)LORA_NSS);
 
-  // The ESP32-C6 has no ext0 wakeup (SOC_PM_SUPPORT_EXT0_WAKEUP is unset in
-  // its soc_caps.h, unlike classic ESP32/S2/S3) — PLAN.md's original sketch
-  // assumed ext0 and was wrong. ext1 covers a single pin just as well; it
-  // takes a bitmask instead of a pin number, and (per its own doc comment)
-  // fully replaces the previous ext1 config on every call, which is exactly
-  // what's needed to flip the wakeup level between wakes.
+  // No ext0 wakeup on the ESP32-C6 (unlike classic ESP32/S2/S3) — ext1
+  // covers a single pin just as well, taking a bitmask instead of a pin
+  // number. Each call fully replaces the previous ext1 config, which is
+  // what lets this flip the wakeup level between wakes.
   esp_sleep_enable_ext1_wakeup(1ULL << REED_PIN,
                                 door_open ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
   esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
@@ -296,14 +243,10 @@ void setup() {
 #ifdef DEBUG
   // Only wait for a monitor in debug builds, where one is deliberately
   // attached before the device sleeps (see tx/Makefile's make debug).
-  // Waiting here in production would cost up to 3s of fully-awake CPU
-  // time on *every* wake: deep sleep powers down the USB peripheral, so
-  // there's never anyone listening in the field and !Serial never goes
-  // true early — this loop would just burn out its full timeout, every
-  // time, forever. That's both the dominant source of wake-to-report
-  // latency and a real battery-life cost (comparable to the entire rest
-  // of the daily budget in PLAN.md's power budget table), not just a
-  // debug-build-only nuisance.
+  // Deep sleep powers down the USB peripheral, so in production nothing
+  // is ever there to satisfy !Serial — this loop would burn its full
+  // timeout on every wake instead, a real battery-life cost, not just a
+  // debug-only nuisance (see README.md's power-budget History).
   uint32_t t0 = millis();
   while (!Serial && millis() - t0 < 3000) delay(10);
 #endif
@@ -314,27 +257,20 @@ void setup() {
                              // internal pull-up, matching the production circuit
 
   // Detect an abnormal reset, or persisted state that didn't survive
-  // despite a reset reason claiming it should have, as early as possible
-  // — neither check needs the radio, so neither is missed if
-  // radio.begin() below happens to fail on this particular wake.
-  //
-  // esp_reset_reason() reports only the *immediately preceding* boot's
+  // despite a reset reason claiming it should have, before radio.begin()
+  // — so neither check is missed if that happens to fail this wake.
+  // esp_reset_reason() reports only the immediately preceding boot's
   // cause: ESP_RST_DEEPSLEEP on every routine wake, ESP_RST_SW on our own
-  // rapid-slam-guard restarts (enter_safe_deep_sleep() above); anything
-  // else (ESP_RST_POWERON, ESP_RST_BROWNOUT, a watchdog, a panic, ...) is
-  // worth knowing about. Logged unconditionally (not just when abnormal)
-  // so a live serial monitor shows it on every boot.
+  // rapid-slam-guard restart below; anything else is worth knowing about.
+  // Logged unconditionally so a live serial monitor shows it every boot.
   esp_reset_reason_t reset_reason = esp_reset_reason();
   Serial.printf("reset reason: %d\n", (int)reset_reason);
 
-  // persisted_checksum is a second, independent check on top of
-  // reset_reason: live testing found that ESP.restart() does not reliably
-  // preserve RTC_DATA_ATTR (only RTC_NOINIT_ATTR is documented to survive
-  // a restart, not just deep sleep — see PLAN.md's "Reset diagnostics"),
-  // so a reset reason claiming "routine" couldn't always be trusted on
-  // its own. A mismatch here means next_seq/wake_state/etc. can't be
-  // trusted either (true first boot, or something corrupted them) — reset
-  // them to known-safe values before anything else reads them.
+  // Independent check on top of reset_reason, since a reset reason
+  // claiming "routine" can't always be trusted on its own (README.md's
+  // Software history). A mismatch means next_seq/wake_state/etc. can't be
+  // trusted either — reset them to known-safe values before anything
+  // else reads them.
   bool persisted_state_valid = (persisted_checksum ==
       compute_persisted_checksum(next_seq, wake_state, diagnostic_pending, pending_diagnostic_info));
   if (!persisted_state_valid) {
@@ -376,20 +312,11 @@ void setup() {
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin failed: %d (check lora_pins.h wiring)\n", state);
     bool actual_open = read_debounced_state();
-    // Establish the baseline now, from the pin alone — it doesn't need the
-    // radio — even though we can't transmit anything this wake. Without
-    // this, a radio fault on this very first-ever wake would leave
-    // have_committed_state false and skip straight to sleeping below; a
-    // *later* wake, once radio.begin() finally succeeds, would then hit
-    // the "first boot" case further down and silently adopt whatever the
-    // door happens to be doing *then* as "the starting state" —
-    // swallowing any real open/close that happened during however many
-    // failed retries came before that, with no event ever sent for it.
-    // establish_baseline_if_needed() (not decide_wake_action(), which
-    // assumes a send is about to happen) means have_committed_state only
-    // ever reflects "has this device been through a real power-on," not
-    // "did the radio also happen to work that time" — see PLAN.md's
-    // "Never missing a state change".
+    // Establish the baseline now, from the pin alone, even though we
+    // can't transmit this wake — otherwise a later wake where the radio
+    // finally comes up could silently adopt whatever the door is doing
+    // *then* as the starting state, losing any real transition in
+    // between (see README.md's Software history).
     if (establish_baseline_if_needed(wake_state, actual_open)) {
       Serial.printf("initial door state: %s (radio not yet up)\n", actual_open ? "open" : "closed");
     }
@@ -420,27 +347,18 @@ void setup() {
 
   bool actual_open = read_debounced_state();
 
-  // Whether this wake's actual cause was the RTC timer we armed, as
-  // opposed to the reed-switch ext1 edge (almost always, when it isn't
-  // the timer) — only consulted by decide_wake_action() in the
-  // already-no-transition branches, to tell a genuinely elapsed timer
-  // apart from reed-switch contact bounce/chatter that fires the edge
-  // wakeup without actually changing the debounced state. See
-  // door_wake_logic.h's comment on decide_wake_action() for why.
+  // See door_wake_logic.h's decide_wake_action() comment for why this
+  // matters only in the already-no-transition branches.
   bool timer_wakeup = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
 
-  // decide_wake_action() (door_wake_logic.h) is the pure decision — no
-  // Arduino/radio dependencies, host-tested in test/test_tx_wake_logic.cpp
-  // — of what this wake means; everything below is just carrying out
-  // whichever decision it already made and updated wake_state for.
+  // decide_wake_action() (door_wake_logic.h) is the pure decision of what
+  // this wake means; everything below just carries it out.
   switch (decide_wake_action(wake_state, actual_open, timer_wakeup)) {
     case WAKE_ACTION_NONE:
-      // First boot (power-on, not a sleep wake) where radio.begin()
-      // happened to succeed on the very first attempt — nothing to
-      // compare against yet, so just record the starting state silently,
-      // same as the old no-sleep tx.ino did. (If radio.begin() had
-      // instead failed on an earlier wake, the baseline was already
-      // established in the failure branch above.)
+      // First-ever wake where radio.begin() succeeded immediately —
+      // nothing to compare against yet, just record the starting state.
+      // (If radio.begin() had instead failed on an earlier wake, the
+      // baseline was already established in the failure branch above.)
       Serial.printf("initial door state: %s\n", wake_state.door_open_committed ? "open" : "closed");
       break;
     case WAKE_ACTION_REPORT_TRANSITION:

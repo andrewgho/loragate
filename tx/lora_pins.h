@@ -19,9 +19,8 @@
 //   D5       RF_SW
 //   D6       D6    (passthrough, unused)
 //
-// This superseded an earlier schematic-derived guess that was off by one
-// header position on the control-line side (D0-D5 instead of D1-D6) — that
-// guess got RADIOLIB_ERR_CHIP_NOT_FOUND (-2) from radio.begin().
+// See README.md's Hardware history for why this came from the
+// silkscreen rather than a schematic.
 
 #pragma once
 

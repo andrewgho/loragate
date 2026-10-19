@@ -1,11 +1,10 @@
-// loragate rx — phase-2 door-sensor receiver, always-on test bench.
+// loragate rx — always-on door-sensor receiver.
 //
-// Listens forever, acks every recognized packet, logs it, and forwards it to
-// the monitoring server: door open/close hit /notify/door/gate/{open,close},
-// heartbeats hit /log/door/gate/heartbeat, and an abnormal tx reset reason
-// (PKT_DIAGNOSTIC — see PLAN.md's "Reset diagnostics") hits
-// /log/door/gate/diagnostic/<reason>. No retries or error handling on the
-// HTTP side yet — a failed request just gets logged and dropped.
+// Listens forever, acks every recognized packet, logs it, and forwards it
+// to the monitoring server (URLs in local.h — see README.md's Software
+// section for the protocol and architecture). No retries or error
+// handling on the HTTP side — a failed request just gets logged and
+// dropped.
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -161,12 +160,9 @@ void report_door_open_past(unsigned seconds, const LoraPacket *pkt) {
   http_get(url);
 }
 
-// 255 isn't a real esp_reset_reason_t value (those top out well below
-// this) — tx.ino uses it to flag persisted state (RTC_NOINIT_ATTR) that
-// didn't survive despite a reset reason that claimed it should have,
-// which should be impossible but gets a distinct, honest label if it
-// ever happens anyway. Must match RTC_DATA_LOSS_INFO in tx/tx.ino. See
-// PLAN.md's "Reset diagnostics".
+// 255 isn't a real esp_reset_reason_t value — tx.ino uses it to flag
+// persisted RTC state that didn't survive despite a reset reason that
+// claimed it should have. Must match RTC_DATA_LOSS_INFO in tx/tx.ino.
 #define RTC_DATA_LOSS_INFO 255
 
 // Maps a PKT_DIAGNOSTIC packet's `info` byte (an esp_reset_reason_t cast to
@@ -236,18 +232,13 @@ void setup() {
 }
 
 void handle_packet() {
-  // Reached only because the radio's IRQ actually fired — something
-  // matching our frequency/sync word came in, whether or not it goes on to
-  // decode as a packet we recognize below. That's weak evidence at best
-  // (a CRC-failed reception carries no reliable information about
-  // whether it came from our tx or from ambient RF noise/interference —
-  // caught live: CRC failures logged while tx was confirmed powered off
-  // overnight), so only the silence *clock* resets unconditionally here;
-  // the one-shot alert *latch* (stale_alerted) only clears once a packet
-  // actually decodes as one of our known types, below — otherwise a
-  // noise-triggered CRC failure after a real outage could silently
-  // suppress every alert after the first for as long as noise keeps
-  // showing up, even while the transmitter stays genuinely dead.
+  // Reached whenever the radio's IRQ fires, whether or not it decodes
+  // below — that's weak evidence at best (a CRC-failed reception could be
+  // ambient RF noise, not our tx — confirmed live, see README.md's
+  // Software history), so only the silence *clock* resets unconditionally
+  // here. The one-shot alert *latch* (stale_alerted) only clears once a
+  // packet decodes as a known type, below — otherwise noise after a real
+  // outage could suppress every alert while the transmitter stays dead.
   last_rx_ms = millis();
 
   LoraPacket pkt;

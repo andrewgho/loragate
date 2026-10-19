@@ -13,8 +13,8 @@
 // and ack the original) resends the same seq with a different txno, and
 // that's the only way the same seq is ever seen twice. Anything else —
 // including a seq lower than last_seq, which would mean real data loss
-// on the transmitter (see PLAN.md's "Reset diagnostics") — isn't a
-// duplicate; it's still a real event worth processing.
+// on the transmitter — isn't a duplicate; it's still a real event worth
+// processing.
 inline bool is_duplicate_seq(bool have_last_seq, uint32_t last_seq, uint32_t seq) {
   return have_last_seq && seq == last_seq;
 }

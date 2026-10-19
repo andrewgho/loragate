@@ -1,18 +1,14 @@
 // Pure, host-testable checksum over the handful of values tx.ino needs to
-// survive not just deep sleep but also a restart — RTC_NOINIT_ATTR, not
-// RTC_DATA_ATTR, since only RTC_NOINIT_ATTR is documented to survive a
-// restart (ESP.restart(), e.g. the rapid-slam guard in tx.ino); the latter
-// is only documented to survive deep sleep. See PLAN.md's "Reset
-// diagnostics" for how live testing found this the hard way.
+// survive not just deep sleep but also a restart — stored in
+// RTC_NOINIT_ATTR, not RTC_DATA_ATTR (the latter is only documented to
+// survive deep sleep, not ESP.restart(); see README.md's Software
+// history).
 //
 // RTC_NOINIT_ATTR sections are skipped entirely by the bootloader's
 // startup init, so their contents are undefined garbage on a true first
-// boot (fresh flash, or any reset that actually does clear RTC memory).
-// Comparing a freshly-computed checksum against one stored alongside the
-// data tells the two cases apart: a match means the data (and the
-// checksum itself) really did survive; a mismatch means either this is a
-// first boot or something corrupted the data since it was last trusted —
-// either way, it's not safe to use as-is.
+// boot. Comparing a freshly-computed checksum against one stored
+// alongside the data tells "survived for real" apart from "first boot,
+// or something corrupted it" — either way, not safe to use as-is.
 //
 // Not cryptographic — FNV-1a is just sensitive enough to accidental bit
 // changes in a few bytes of non-adversarial data, which is all this needs

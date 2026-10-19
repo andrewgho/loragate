@@ -34,9 +34,9 @@ enum WakeAction {
 //
 // Deliberately callable without a radio: tx.ino's radio.begin() failure
 // branch calls this directly (not through decide_wake_action(), which
-// assumes a send is about to happen) so that a radio fault on the very
-// first wake ever can't leave have_committed_state false — see PLAN.md's
-// "Never missing a state change" for why that mattered in practice.
+// assumes a send is about to happen) so a radio fault on the very first
+// wake ever can't leave have_committed_state false — see README.md's
+// Software history for why that mattered in practice.
 inline bool establish_baseline_if_needed(DoorWakeState &state, bool actual_open) {
   if (state.have_committed_state) return false;
   state.door_open_committed = actual_open;
@@ -46,30 +46,22 @@ inline bool establish_baseline_if_needed(DoorWakeState &state, bool actual_open)
 
 // Decides what a wake with a working radio should do, given a fresh
 // debounced pin reading, updating `state` to match the decision made.
-// `timer_wakeup` is whether this wake's actual cause
-// (esp_sleep_get_wakeup_cause() in tx.ino) was the RTC timer, as opposed
-// to the reed-switch ext1 edge (almost always — see tx.ino's
+// `timer_wakeup` is whether this wake's actual cause was the RTC timer,
+// as opposed to the reed-switch ext1 edge (see tx.ino's
 // enter_safe_deep_sleep()).
 //
-// Transition detection below never looks at `timer_wakeup` at all — a
-// real transition is always reported regardless of what woke us, exactly
-// as before (PLAN.md's "Never missing a state change": wakeup cause is
-// still never trusted to tell us *whether* something changed). What
-// `timer_wakeup` gates is only what happens once we already know nothing
-// changed: a real reed-switch edge that settles back to the same
-// debounced state (contact bounce, wind/vibration on an outdoor gate) is
-// common enough to need telling apart from "the held-open recheck timer,
-// or the hourly heartbeat timer, genuinely elapsed" — without this,
-// every such spurious edge either burns a full radio-and-transmit cycle
-// on a heartbeat nobody needed, or worse, consumes the held-open check's
-// one-shot budget long before HELD_OPEN_CHECK_SECONDS has actually
-// passed (see WAKE_ACTION_HELD_OPEN_CHECK's regression test).
+// A real transition is always reported regardless of `timer_wakeup` —
+// whether something changed is never decided from what woke us, only
+// from the pin diff. `timer_wakeup` only matters once we already know
+// nothing changed: a reed-switch edge that settles back to the same
+// state (contact bounce, outdoor wind/vibration) needs telling apart
+// from a genuinely elapsed timer, or it either burns a radio cycle on
+// an unneeded heartbeat or consumes the held-open check's one-shot
+// budget early (see WAKE_ACTION_HELD_OPEN_CHECK's regression test).
 //
-// Doesn't itself run the "door moved again while a send was in flight"
-// catch-up loop (report_door_transition() in tx.ino) — once this returns
-// WAKE_ACTION_REPORT_TRANSITION, state.door_open_committed already holds
-// the state to send; converging on further mid-send flips is tx.ino's
-// job, not a decision this function needs to make.
+// Doesn't run the "door moved again while a send was in flight" catch-up
+// loop (tx.ino's report_door_transition()) — that's tx.ino's job once
+// this returns WAKE_ACTION_REPORT_TRANSITION.
 inline WakeAction decide_wake_action(DoorWakeState &state, bool actual_open, bool timer_wakeup) {
   if (establish_baseline_if_needed(state, actual_open)) {
     return WAKE_ACTION_NONE;

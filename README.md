@@ -289,6 +289,14 @@ and fill it in. `tx/` needs no `local.h` (no WiFi).
   ack itself got lost) was double-notifying the monitoring server for
   the same event; fixed by dedup-by-sequence-number on the receiver
   before acting on a packet, while still acking unconditionally.
+- The receiver's "transmitter's gone quiet" staleness alert originally
+  cleared its one-shot latch on *any* radio reception, including a
+  CRC failure — caught live when CRC failures logged while the
+  transmitter was confirmed powered off overnight suppressed the
+  alert that should have kept firing. Fixed by only clearing the
+  latch on a reception that actually decodes as a known packet type
+  (the silence *clock* still resets on any reception, since that part
+  was never wrong).
 - NTP sync and a reported `localtime=` field were added, then removed:
   the actual timing gap they were meant to close (radio-level latency)
   is usually under a second and gets swamped by the monitoring
