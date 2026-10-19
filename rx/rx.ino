@@ -112,7 +112,7 @@ void run_housekeeping() {
   uint32_t silence_s = (millis() - last_rx_ms) / 1000UL;
   if (!stale_alerted && silence_s >= STALE_WINDOW_SECONDS) {
     stale_alerted = true;
-    char url[160];
+    char url[256];
     snprintf(url, sizeof(url), TRANSMISSION_STALE_URL_TEMPLATE, (unsigned long)silence_s);
     http_get(url);
   }
@@ -263,7 +263,7 @@ void handle_packet() {
 
   // Ack every recognized packet so the transmitter stops retrying, before
   // doing anything slower (HTTP) below.
-  LoraPacket ack = { PKT_ACK, pkt.seq, 0 };
+  LoraPacket ack = { PKT_ACK, pkt.seq, 0, 0 };
   int tx_st = radio.transmit((uint8_t *)&ack, sizeof(ack));
   if (tx_st != RADIOLIB_ERR_NONE) {
     Serial.printf("ack transmit failed: %d\n", tx_st);

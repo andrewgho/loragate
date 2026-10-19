@@ -5,9 +5,8 @@
 // every recognized packet (correct, needed to stop tx retrying) but also
 // re-ran the full per-type handling — including the HTTP notify — on a
 // retry whose only problem was a lost ack, producing a second
-// /notify/door/gate/close hit for the same logical event. See PLAN.md's
-// "Reset diagnostics" for the unrelated-but-similarly-investigated
-// brownout work this surfaced during.
+// /notify/door/gate/close hit for the same logical event. See README.md's
+// Software History.
 
 #include <cassert>
 #include "seq_dedup.h"

@@ -33,6 +33,9 @@ inline uint32_t compute_persisted_checksum(uint32_t next_seq, const DoorWakeStat
                                             bool diagnostic_pending, uint8_t pending_diagnostic_info) {
   uint32_t h = 2166136261UL;  // FNV-1a offset basis
   h = fnv1a_update(h, &next_seq, sizeof(next_seq));
+  // Hashes wake_state's raw bytes via sizeof() — fine while it's three
+  // bools with no padding; if it ever grows a multi-byte field, hash
+  // per-field instead so padding bytes don't end up mixed in.
   h = fnv1a_update(h, &wake_state, sizeof(wake_state));
   h = fnv1a_update(h, &diagnostic_pending, sizeof(diagnostic_pending));
   h = fnv1a_update(h, &pending_diagnostic_info, sizeof(pending_diagnostic_info));

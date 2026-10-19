@@ -7,9 +7,8 @@
 //
 // Several of these cases are direct regression tests for bugs caught by
 // manual code review before this file existed, or by manual review of a
-// live field log afterward (the spurious-wake cases) — see PLAN.md's
-// "Never missing a state change" and "Wake behavior" sections for the
-// reasoning.
+// live field log afterward (the spurious-wake cases) — see README.md's
+// Software History for the reasoning.
 
 #include <cassert>
 #include "door_wake_logic.h"

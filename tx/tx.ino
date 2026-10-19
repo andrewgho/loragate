@@ -27,6 +27,10 @@
 #define REED_PIN              0
 #define DEBOUNCE_MS           50
 
+// Centralizes the HIGH-means-open polarity convention above so it's only
+// spelled out in one place.
+bool reed_is_open() { return digitalRead(REED_PIN) == HIGH; }
+
 // How long the door can stay open before we proactively re-report it —
 // once per open episode, not repeatedly (README.md's "Software" section).
 #define HELD_OPEN_CHECK_SECONDS    300
@@ -95,7 +99,7 @@ void enter_safe_deep_sleep(bool door_open, uint32_t seconds) {
   // sleep through the transition that already happened. Restarting
   // re-runs setup() against the pin's actual current state instead.
   delay(DEBOUNCE_MS);
-  if ((digitalRead(REED_PIN) == HIGH) != door_open) {
+  if (reed_is_open() != door_open) {
     Serial.println("door moved while preparing to sleep; restarting to re-check");
     Serial.flush();
     ESP.restart();
@@ -202,11 +206,11 @@ void send_event(LoraPacketType type, uint8_t info) {
 // then returns that value — a trustworthy "what is the door doing right
 // now", as opposed to the single raw read esp_sleep's wakeup cause implies.
 bool read_debounced_state() {
-  bool raw = digitalRead(REED_PIN) == HIGH;
+  bool raw = reed_is_open();
   uint32_t stable_since = millis();
   while (true) {
     delay(5);
-    bool r = digitalRead(REED_PIN) == HIGH;
+    bool r = reed_is_open();
     if (r != raw) {
       raw = r;
       stable_since = millis();
@@ -276,7 +280,7 @@ void setup() {
   if (!persisted_state_valid) {
     Serial.println("persisted state invalid (first boot, or unexpected loss); resetting");
     next_seq = 0;
-    wake_state = (DoorWakeState){false, false, false};
+    wake_state = DoorWakeState{false, false, false};
     diagnostic_pending = false;
     pending_diagnostic_info = 0;
   }
