@@ -1,9 +1,0 @@
-// Copy this file to local.h (gitignored) and fill in real values.
-
-#pragma once
-
-#define WIFI_SSID     "PicoNet"
-#define WIFI_PASSWORD "yonoquierovolar"
-
-// Placeholders, in order: seq (%lu), txno (%u), rssi in dBm (%f), snr in dB (%f).
-#define REPORT_URL_TEMPLATE "http://192.168.1.12/heartbeat.txt?from=lora-receiver-test&seqno=%lu&txno=%u&rssi=%.1f&snr=%.1f"

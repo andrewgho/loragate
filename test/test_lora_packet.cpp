@@ -1,5 +1,5 @@
-// Host-side test for the phase-2 (tx/rx) door-sensor packet format. No
-// ESP32/Arduino toolchain needed — just a C++ compiler. Compiled against
+// Host-side test for the door-sensor packet format. No ESP32/Arduino
+// toolchain needed — just a C++ compiler. Compiled against
 // tx/lora_packet.h; the repo-root `make test` separately diffs that file
 // against rx/lora_packet.h to make sure the two required-identical copies
 // haven't drifted apart (see the comment atop that header).

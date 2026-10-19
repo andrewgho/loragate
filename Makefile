@@ -1,4 +1,4 @@
-SUBDIRS = tx-test rx-test tx rx
+SUBDIRS = tx rx
 
 .DEFAULT_GOAL := compile
 
@@ -7,17 +7,17 @@ SUBDIRS = tx-test rx-test tx rx
 compile:
 	$(foreach d,$(SUBDIRS),$(MAKE) -C $(d) compile &&) true
 
-# Host-side tests (see test/Makefile) for the link-layer wire formats and
+# Host-side tests (see test/Makefile) for the link-layer wire format and
 # tx's wake-decision logic (tx/door_wake_logic.h) — no ESP32 toolchain or
 # hardware needed either.
 test:
 	$(MAKE) -C test test
 
 flash-tx:
-	$(MAKE) -C tx-test flash
+	$(MAKE) -C tx flash
 
 flash-rx:
-	$(MAKE) -C rx-test flash
+	$(MAKE) -C rx flash
 
 clean:
 	$(foreach d,$(SUBDIRS),$(MAKE) -C $(d) clean;)
