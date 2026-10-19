@@ -3,8 +3,8 @@
 Physical build reference for the outdoor transmitter: XIAO ESP32-C6 + Wio-SX1262
 stack, magnetic reed switch, 3x AA lithium primary cells through a nanopower
 LDO, optional DS3231 RTC.
-Not yet built or firmware-tested — this is the plan, cross-checked against the
-confirmed radio pinout in `tx-test/lora_pins.h`/`rx-test/lora_pins.h` and
+Built and field-tested — this is the as-built reference, cross-checked
+against the confirmed radio pinout in `tx-test/lora_pins.h`/`rx-test/lora_pins.h` and
 Seeed's own docs. First draft came from an AI-authored plan
 (`https://alleycat.moychan.com/at/lora_gate_sensor.html`); several things in
 it didn't hold up against our actual hardware and are corrected below — see
@@ -44,11 +44,13 @@ adapter, resistor, caps, and JST-PH pads alongside the stack's socket rather
 than needing a second board): female pin headers soldered onto the
 protoboard as a socket, with the Wio module (the bottom half of the stack,
 its male header pins facing down) plugging into that socket. Once seated,
-all 14 XIAO signals (D0-D10, 3V3, GND, VBUS) are available as ordinary
-through-hole solder points on the protoboard's underside — standard female
-header strips have their pins protrude slightly on the solder side — which
-is where the reed switch leads, the D0 pull-up, and the LDO's regulated
-output all land.
+13 of the 14 XIAO signals (D1-D10, 3V3, GND, VBUS) are available as
+ordinary through-hole solder points on the protoboard's underside —
+standard female header strips have their pins protrude slightly on the
+solder side — which is where the reed switch leads, the D0 pull-up, and
+the LDO's regulated output all land. D0 is the one exception: it's
+bypassed around the stack entirely rather than landing here normally —
+see "The Wio-SX1262 HAT's onboard button shares D0" below for why.
 
 ### Why the reed switch is on D0, not an arbitrary free pin
 
@@ -63,6 +65,9 @@ once the radio has claimed D1/D2 (the other two RTC-capable header pins).
 GPIO0 is not a strapping/boot-select pin on the C6 (unlike classic ESP32,
 where it is) — confirmed against Seeed's own schematic — so there's no boot
 hazard to worry about here.
+
+This pin choice turned out to have a real, separate consequence of its
+own — see "The Wio-SX1262 HAT's onboard button shares D0" below.
 
 ### Reed switch circuit
 
@@ -83,6 +88,53 @@ high-impedance enough that 1MΩ still gives a clean logic level over the
 enclosure-to-switch wire run; if the real installation turns out to be
 electrically noisy (long run, near AC wiring), drop to 100kΩ before adding
 back software pull-up juggling.
+
+### The Wio-SX1262 HAT's onboard button shares D0 — bypass required
+
+The Wio-SX1262 HAT has its own onboard user button (unused by this
+project) with a 10kΩ pull-up wired to the *same* `D0` net the reed
+switch uses — confirmed directly from Seeed's own KiCad schematic for
+the board, not inferred. This is on the board as shipped, not something
+specific to one variant or assembly option.
+
+It went undetected for a long time because it's silent in isolation —
+with the door open, nothing pulls `D0` low, so the extra 10kΩ pull-up
+just sits there agreeing with the external 1MΩ one, drawing no current.
+The problem only shows up with the door *closed*: current then flows
+through the parallel combination of the HAT's 10kΩ and the external
+1MΩ (`3.3V / (1MΩ ∥ 10kΩ) ≈ 333µA`), instead of just the ~3.3µA the
+external 1MΩ alone was designed for — live PPK2 measurement confirmed
+~318µA sleep current with the door closed, matching that math closely,
+against a budgeted ~41-44µA. See `PLAN.md`'s "Sleep current root cause"
+for the full investigation (several other hypotheses were tested and
+ruled out before this one was found) and the measured before/after
+numbers confirming the fix.
+
+**Fix: snip `D0` out of the stacking header entirely, bridge with a
+direct wire.** Both the XIAO's own `D0` pin and the Wio HAT's `D0` pin
+are cut flush where each protrudes past its own board's solder joint
+(the exposed stub below the board, not through the board itself). Each
+stacking pin is one continuous piece of metal running from its female
+socket down to its male tip, soldered to its own board at the point
+where it passes through — cutting the protruding stub removes the
+portion that would otherwise reach the next board in the stack, without
+disturbing the solder joint or the socket above it. A short wire is
+then soldered directly from the XIAO's `D0` pin to the reed-switch
+circuit on the protoboard, routed around the Wio HAT entirely. The
+HAT's button and its pull-up are left fully isolated — connected to
+nothing but each other and `+3V3` — functionally disabled, which costs
+nothing since this project never uses that button.
+
+Confirmed on the actual hardware before committing to anything
+irreversible: live-wired by hand with test jumper cables first (no
+cutting), reproducing both the faulty ~318µA/closed-door signature with
+`D0` wired through the HAT normally, and a clean **21.9µA (closed) /
+18.5µA (open)** with `D0` bypassing the HAT entirely.
+
+A future PCB revision (planned) would put the XIAO and the Wio-SX1262
+module in separate sockets rather than stacking them, sidestepping this
+HAT-sharing issue entirely — this bypass is a fix for the current
+stacked-HAT build specifically, not a permanent design choice.
 
 ## Power
 

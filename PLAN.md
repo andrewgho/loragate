@@ -206,17 +206,80 @@ capture, each fixed:
 This mechanism reports *that* an abnormal reset happened and *what kind*
 (brownout, panic, watchdog, a repeat power-on, …) — it doesn't change
 anything about the hardware's actual susceptibility to a genuine brownout
-in the first place, which (independent of the `ESP.restart()` bug above)
-remains a real, still-open question. If `brownout` specifically keeps
-showing up, the next place to look is the power rail itself — see "Power
-budget" below for the corrected (much higher than first assumed)
-active-current figures this is actually stressing, and the already-"free"
-lever (lower `LORA_TX_POWER_DBM`) that follows directly from them.
+in the first place. That question is effectively resolved now, though not
+by this mechanism ever actually firing on one: see "Sleep current root
+cause" immediately below — the elevated-current symptom that originally
+motivated the brownout hypothesis turned out to have nothing to do with
+brownouts at all.
+
+## Sleep current root cause
+
+The brownout question above was investigated by actually measuring, once
+a Nordic PPK2 became available — and it turned out to be unrelated to
+brownouts entirely. Live sleep current measured ~1.5mA with the door
+closed, roughly 40x the ~41-44µA then-budgeted figure (see "Power
+budget" below for the real numbers now that this is resolved).
+
+Root-caused through a methodical elimination process — each step
+confirmed or refuted on real hardware before moving to the next, nothing
+assumed:
+
+1. `LORA_NSS` wasn't held across deep sleep — ESP32-C6 doesn't retain a
+   GPIO's driven level across sleep unless explicitly told to
+   (`gpio_hold_en()`), and the SX1262 treats a falling edge on NSS as a
+   wake-from-SLEEP trigger (Semtech datasheet section 8.2.2). Holding NSS
+   dropped sleep current from ~1.5mA to ~318µA — real, but not the whole
+   story.
+2. Ruled out, each confirmed by a real hardware test rather than
+   assumption: `LORA_RFSW`'s level (holding it HIGH made things slightly
+   *worse*; holding it LOW was identical to not touching it at all),
+   internal pull resistors on `REED_PIN` (`gpio_pullup_dis()`/
+   `gpio_pulldown_dis()`, no measurable effect), `ext1` wakeup
+   configuration itself (disabling it entirely left the ~318µA signature
+   completely unchanged), and the RTC slow clock source (confirmed
+   correctly set to the internal oscillator, not an absent external
+   crystal that the chip might otherwise keep trying to start up).
+3. **The actual cause:** the Wio-SX1262 HAT has its own onboard user
+   button (`K1`, unused by this project) with a 10kΩ pull-up (`R2`)
+   wired to the *same* `D0` net the reed switch uses — confirmed
+   directly from Seeed's own KiCad schematic for the board, not
+   inferred. With the door closed, current flows through the parallel
+   combination of `R2` (10kΩ) and the external 1MΩ pull-up:
+   `3.3V / (1MΩ ∥ 10kΩ) ≈ 333µA`, matching the measured ~318µA closely.
+   Confirmed definitively with a live A/B test on the actual hardware
+   (jumper-wired by hand, no permanent modification, before committing
+   to anything irreversible): bypassing the Wio HAT's `D0` connection
+   entirely (direct wire from the XIAO's `D0` pin to the reed-switch
+   circuit, Wio HAT's `D0` pin left unconnected) dropped sleep current to
+   a clean **21.9µA (door closed) / 18.5µA (door open)** — *below* the
+   original budget, and the remaining ~3.4µA difference matches the
+   external 1MΩ pull-up's own expected cost almost exactly
+   (`3.3V/1MΩ ≈ 3.3µA`). No further mystery current left unaccounted for.
+
+**Fix, hardware-only, no firmware change:** see WIRING.md's "The
+Wio-SX1262 HAT's onboard button shares D0" for the physical detail —
+`D0` is snipped out of the stacking header entirely and bridged with a
+direct wire from the XIAO straight to the reed-switch circuit, bypassing
+the Wio HAT's shared net (and its button) completely.
+
+One real, separate finding along the way, independent of the above and
+deliberately not yet acted on: if `radio.begin()` ever fails with the
+Wio HAT physically present and powered (observed once already, with
+`RADIOLIB_ERR_CHIP_NOT_FOUND`, though not from a genuine hardware
+fault), the existing fallback path sleeps without ever successfully
+commanding the radio into its own SLEEP mode — and a powered,
+never-commanded SX1262 draws ~2.7mA, not a few µA, for the entire sleep
+duration. At the hourly heartbeat floor, one such failure would cost
+more power in a single sleep period than this table's entire daily
+budget. `radio.begin()` failing in the field hasn't actually been
+observed, so this is deferred rather than fixed now — see "Open items".
 
 ## Power budget
 
-Deep sleep leakage sources, with confidence noted — none of these are
-measured yet, they're either datasheet figures or estimates:
+Deep sleep leakage sources. Option B (MCP1700, currently installed) now
+has a real measured total rather than a sum of estimates — see "Sleep
+current root cause" above for how it was measured and what it took to
+get there:
 
 | Source | Estimate | Basis |
 |---|---|---|
@@ -228,8 +291,8 @@ measured yet, they're either datasheet figures or estimates:
 | Battery-voltage divider + ADC | ~1.3µA (fresh pack, worst case) | 4.7MΩ+2.2MΩ raw-battery divider (~0.78µA) plus the ADS1115's own ~0.5µA typical power-down draw — see WIRING.md's "Battery voltage monitoring" |
 | LDO quiescent — Option A (TPS7A0233) | ~0.000025µA | 25nA typical, even in dropout — doesn't move the total. Not currently installed — see WIRING.md's "Power" → "Choosing an LDO" |
 | LDO quiescent — Option B (MCP1700) | ~1.6µA typ / 4µA max | 60-160x Option A's figure, but confirmed working. **Currently installed** |
-| **Total, Option A** | **~39µA** | vs. the original plan's ~65µA, mostly because the pull-up choice differs |
-| **Total, Option B (as currently built)** | **~41µA typ / ~44µA max** | same breakdown, with Option B's higher LDO quiescent current in place of Option A's |
+| **Total, Option A (estimated — not measured)** | **~39µA** | vs. the original plan's ~65µA, mostly because the pull-up choice differs; Option A isn't currently installed, so this is still a sum of estimates, not a measurement |
+| **Total, Option B — MEASURED** | **21.9µA (door closed) / 18.5µA (door open)** | live PPK2 measurement on the actual built unit, after the `D0`/Wio-HAT fix above — see "Sleep current root cause". Lower than the ~41-44µA sum-of-estimates directly above it; one or more of those individual line items was itself conservative, not worth re-deriving which now that the real total is in hand. Door-closed is the conservative figure to budget against, since that's the gate's typical resting state. |
 
 Active transmit: ~120ms at **~120mA** per event at +22dBm (the current
 `LORA_TX_POWER_DBM`) — negligible against sleep current unless the gate
@@ -239,8 +302,7 @@ primary sources once the actual datasheets were on hand — Semtech's
 SX1261/2 datasheet (Table 3-6, 915MHz band, SX1262: 118mA typical at
 +22dBm) and Seeed's Wio-SX1262 *module* datasheet, the actual installed
 part (`"Maximum operation current (Transmitter): 125mA @22dBm"`,
-independently measured at the module level). Also relevant to the
-brownout investigation below: RadioLib already applies Semtech's
+independently measured at the module level). RadioLib already applies Semtech's
 per-power-level PA optimization by default (`SX1262::setOutputPower()`'s
 `optimize` parameter defaults `true`), so dropping `LORA_TX_POWER_DBM` is
 a real, already-"free" lever — roughly 84mA at +20dBm, 58mA at +17dBm,
@@ -284,41 +346,42 @@ Figured for both LDO options, since neither is more "correct" than the
 other until Option A has a working unit to measure:
 
 ```
-Option A (TPS7A0233):
+Option A (TPS7A0233, estimated — not currently installed, not measured):
 sleep:  0.039mA * 24h                    ≈ 0.936 mAh/day
 active: 54 * 0.120s * 125mA / 3600       ≈ 0.225 mAh/day
 total                                    ≈ 1.161 mAh/day
 2,100 mAh / (1.161 mAh/day * 365)        ≈ 5.0 years
 
-Option B (MCP1700, typical IQ — as currently built):
-sleep:  0.0412mA * 24h                   ≈ 0.989 mAh/day
+Option B (MCP1700 — currently installed, sleep current MEASURED):
+sleep:  0.0219mA * 24h                   ≈ 0.526 mAh/day
 active: 54 * 0.120s * 125mA / 3600       ≈ 0.225 mAh/day
-total                                    ≈ 1.214 mAh/day
-2,100 mAh / (1.214 mAh/day * 365)        ≈ 4.7 years
+total                                    ≈ 0.751 mAh/day
+2,100 mAh / (0.751 mAh/day * 365)        ≈ 7.7 years
 ```
 
-Option B at its 4µA worst-case (not just 1.6µA typical) comes out to
-roughly 4.5 years instead of 4.7 — still comfortably clears the "2+ years
-would be satisfying in practice" bar this project is actually targeting,
-which matters more here than the gap between the two options. (Using the
-125mA module-measured figure here, not the 118mA chip-datasheet one —
-slightly more conservative, and it's what the actual installed part is
-rated for.) Dropping to a lower `LORA_TX_POWER_DBM` would shrink the
-active line further still, on top of easing the brownout risk below.
+Option B's 21.9µA sleep figure is a real measurement from the actual
+built unit (live PPK2, door closed — see "Sleep current root cause"
+above), not a datasheet-derived estimate stacked with everything else's
+uncertainty, so it's a meaningfully more trustworthy number than the
+~41-44µA this table carried before. It could still vary somewhat with
+temperature, pack voltage over the discharge curve, or unit-to-unit
+tolerance on a different physical build — but 7.7 years clears the "2+
+years would be satisfying in practice" bar with enormous margin either
+way, more than enough room to absorb that uncertainty. (Using the 125mA
+module-measured active-current figure here, not the 118mA
+chip-datasheet one — slightly more conservative, and it's what the
+actual installed part is rated for.)
 
 Not modeled here, for lack of any measured data to base a number on:
 `send_event()` retries up to 5 times with backoff if an ack doesn't come
-back, and every figure above assumes a single 120ms burst per event. Live
-field logs show `txno=0` on nearly every send at the tested range, so
-retries look rare in practice, but a worst case of constant retries would
-cost meaningfully more than this table assumes — worth a measured
-current-vs-time trace someday, same as the CPU-awake-time caveat above.
-
-Treat this as optimistic-of-the-corrected-numbers, not a promise — the
-individual leakage line items are still estimates. Worth an actual current
-measurement (multimeter or a µCurrent-style tool in series with the battery)
-once the real transmitter is built, both to sanity-check this table and to
-catch anything the table missed.
+back, and every active-current figure above assumes a single 120ms burst
+per event. Live field logs show `txno=0` on nearly every send at the
+tested range, so retries look rare in practice, but a worst case of
+constant retries would cost meaningfully more than this table assumes —
+worth a measured current-vs-time trace someday, same as the
+CPU-awake-time caveat above. With sleep current now measured, this (and
+the still-estimated Option A figures) is where this table's remaining
+uncertainty actually lives.
 
 ## Open items
 
@@ -338,8 +401,16 @@ catch anything the table missed.
   request with its own trusted clock, so a relative age/offset carried on
   the wire is enough for the server to back-calculate the estimated event
   time itself, without rx needing to report an absolute epoch at all.
-- Sleep current is unmeasured — everything in the power budget is a
-  datasheet or estimated figure.
+- Sleep current for Option B is now measured (21.9µA closed / 18.5µA
+  open — see "Sleep current root cause"); Option A's figures remain
+  pure estimates pending a working unit to actually measure.
+- If `radio.begin()` ever fails with the Wio HAT physically present and
+  powered, the current fallback path sleeps without ever commanding the
+  radio into SLEEP mode, and a powered-but-uncommanded SX1262 draws
+  ~2.7mA for the whole sleep duration — found as a side effect of the
+  sleep-current investigation above, not yet observed in the field, and
+  deliberately deferred rather than fixed. If `radio.begin()` failures
+  ever show up for real, this is the first place to look.
 - `esp_sleep_enable_ext1_wakeup()` on D0 needs confirming against a real
   reed-switch edge during actual deep sleep, not just the `-DDEBUG`
   delay/restart substitute it's been exercised with so far.
