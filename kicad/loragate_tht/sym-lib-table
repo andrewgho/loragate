@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "LoRa_Gate_Local") (type "KiCad") (uri "${KIPRJMOD}/LoRa_Gate_Local.kicad_sym") (options "") (descr ""))
+)
