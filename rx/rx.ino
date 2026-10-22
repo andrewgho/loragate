@@ -18,6 +18,10 @@
 
 #define WIFI_TIMEOUT_MS 10000
 
+// How long to wait between radio.begin() retries at boot if the radio
+// doesn't come up right away.
+#define RADIO_BEGIN_RETRY_MS 5000UL
+
 // How often loop() runs its periodic (not packet-triggered) checks —
 // held-open/staleness thresholds, WiFi health.
 #define HOUSEKEEPING_INTERVAL_MS 1000
@@ -160,6 +164,34 @@ void report_door_open_past(unsigned seconds, const LoraPacket *pkt) {
   http_get(url);
 }
 
+// Percent-encodes spaces (the only special character our own fixed-format
+// condition messages ever contain) while copying src into dst — a raw
+// space in an HTTP request's path is invalid and breaks the request line.
+void url_encode_spaces(char *dst, size_t dst_size, const char *src) {
+  size_t out = 0;
+  for (size_t i = 0; src[i] != '\0' && out + 1 < dst_size; i++) {
+    if (src[i] == ' ' && out + 3 < dst_size) {
+      dst[out++] = '%';
+      dst[out++] = '2';
+      dst[out++] = '0';
+    } else if (src[i] != ' ') {
+      dst[out++] = src[i];
+    }
+  }
+  dst[out] = '\0';
+}
+
+// Reports an rx-side error/recovery condition (ERROR_URL_TEMPLATE /
+// RECOVERY_URL_TEMPLATE) directly to the server — rx has WiFi, unlike tx,
+// so it doesn't need a wire-protocol diagnostic packet to report on itself.
+void report_rx_condition(const char *url_template, const char *message) {
+  char encoded[128];
+  url_encode_spaces(encoded, sizeof(encoded), message);
+  char url[256];
+  snprintf(url, sizeof(url), url_template, encoded);
+  http_get(url);
+}
+
 // 255 isn't a real esp_reset_reason_t value — tx.ino uses it to flag
 // persisted RTC state that didn't survive despite a reset reason that
 // claimed it should have. Must match RTC_DATA_LOSS_INFO in tx/tx.ino.
@@ -204,10 +236,30 @@ void setup() {
                            LORA_SPREADING_FACTOR, LORA_CODING_RATE,
                            LORA_SYNC_WORD, LORA_TX_POWER_DBM,
                            LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("radio.begin failed: %d (check lora_pins.h wiring)\n", state);
-    Serial.println("halting");
-    while (true) delay(1000);
+  // rx is mains-powered and meant to run unattended indefinitely — unlike a
+  // halt, retrying here means a transient fault (power-on before the radio
+  // rail settles, a momentary SPI glitch) self-heals without someone having
+  // to physically power-cycle the unit. Reported to the server directly
+  // (rx has WiFi, unlike tx) rather than only a serial log nobody's
+  // watching — once on the first failure, once more on recovery, not on
+  // every retry attempt in between.
+  bool radio_begin_failed = (state != RADIOLIB_ERR_NONE);
+  if (radio_begin_failed) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "radio initialization failed with code %d", state);
+    report_rx_condition(ERROR_URL_TEMPLATE, msg);
+  }
+  while (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("radio.begin failed: %d (check lora_pins.h wiring); retrying in %lus\n",
+                  state, RADIO_BEGIN_RETRY_MS / 1000UL);
+    delay(RADIO_BEGIN_RETRY_MS);
+    state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ,
+                         LORA_SPREADING_FACTOR, LORA_CODING_RATE,
+                         LORA_SYNC_WORD, LORA_TX_POWER_DBM,
+                         LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
+  }
+  if (radio_begin_failed) {
+    report_rx_condition(RECOVERY_URL_TEMPLATE, "radio initialization recovered");
   }
   Serial.println("radio init OK");
 

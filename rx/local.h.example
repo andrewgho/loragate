@@ -25,7 +25,15 @@
 #define TRANSMISSION_STALE_URL_TEMPLATE "http://192.168.1.12/log/door/gate/transmission_stale?seconds=%lu"
 
 // Raised on PKT_DIAGNOSTIC — the transmitter reporting an abnormal
-// boot/reset reason (see PLAN.md's "Reset diagnostics"). Placeholders, in
+// boot/reset reason (see README.md's Software History). Placeholders, in
 // order: reason name (%s, from reset_reason_name()), raw reset-reason code
 // (%u), seq (%lu), txno (%u).
 #define DIAGNOSTIC_URL_TEMPLATE "http://192.168.1.12/log/door/gate/diagnostic/%s?code=%u&seq=%lu&txno=%u"
+
+// rx reporting its own error/recovery conditions directly to the server
+// (rx has WiFi, unlike tx, so it can report on itself rather than only
+// being inferred from silence like the staleness alert above). The
+// placeholder (%s) is a short free-text message, percent-encoded for
+// spaces before it's substituted in — see report_rx_condition() in rx.ino.
+#define ERROR_URL_TEMPLATE    "http://192.168.1.12/notify/door/gate/error/%s"
+#define RECOVERY_URL_TEMPLATE "http://192.168.1.12/notify/door/gate/recovery/%s"
