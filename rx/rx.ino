@@ -22,6 +22,12 @@
 // doesn't come up right away.
 #define RADIO_BEGIN_RETRY_MS 5000UL
 
+// How many consecutive housekeeping-interval startReceive() retries to
+// try before escalating to a full radio_reinit() — a persistently
+// failing startReceive() more likely means the chip itself is wedged
+// than that one more identical call will somehow succeed.
+#define STARTRECEIVE_REINIT_AFTER_FAILURES 3
+
 // How often loop() runs its periodic (not packet-triggered) checks —
 // held-open/staleness thresholds, WiFi health.
 #define HOUSEKEEPING_INTERVAL_MS 1000
@@ -59,8 +65,8 @@ bool door_is_open = false;
 uint32_t door_opened_at_ms = 0;  // meaningful only while door_is_open
 bool short_open_alerted = false; // true once we've reported this open episode
 
-// Staleness tracking — last_rx_ms starts at setup()'s radio.startReceive()
-// (not "whenever the first packet arrives"), so silence from boot onward
+// Staleness tracking — last_rx_ms starts at the end of setup() (not
+// "whenever the first packet arrives"), so silence from boot onward
 // counts too, not just silence after first contact.
 uint32_t last_rx_ms;
 bool stale_alerted = false;      // true once we've reported this silence
@@ -72,6 +78,11 @@ bool stale_alerted = false;      // true once we've reported this silence
 // would add here.
 bool have_last_seq = false;
 uint32_t last_seq = 0;
+
+// Whether the radio is currently believed to be listening — see
+// ensure_receiving(). Starts true so a successful first startReceive()
+// at boot doesn't look like a "recovery" with nothing to recover from.
+bool radio_listening = true;
 
 void wifi_connect() {
   if (WiFi.status() == WL_CONNECTED) return;
@@ -105,6 +116,23 @@ void run_housekeeping() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi: disconnected; attempting reconnect");
     wifi_connect();
+  }
+
+  // Nothing else will retry this on its own: once startReceive() has
+  // failed, no IRQ ever fires to re-enter handle_packet() and try again,
+  // so this tick is the only thing that can notice and recover. A few
+  // plain retries first (cheap); escalate to a full radio_reinit() only
+  // if those don't work.
+  if (!radio_listening) {
+    static uint8_t consecutive_failures = 0;
+    ensure_receiving();
+    if (radio_listening) {
+      consecutive_failures = 0;
+    } else if (++consecutive_failures >= STARTRECEIVE_REINIT_AFTER_FAILURES) {
+      consecutive_failures = 0;
+      Serial.println("startReceive still failing; reinitializing radio");
+      radio_reinit();
+    }
   }
 
   if (door_is_open && !short_open_alerted &&
@@ -221,30 +249,20 @@ const char *reset_reason_name(uint8_t code) {
   }
 }
 
-void setup() {
-  Serial.begin(115200);
-  uint32_t t0 = millis();
-  while (!Serial && millis() - t0 < 3000) delay(10);
-
-  Serial.println("loragate rx");
-
-  pinMode(LORA_RFSW, OUTPUT);
-  digitalWrite(LORA_RFSW, HIGH);
-
-  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
+// Calls radio.begin() with the project's fixed parameters, retrying every
+// RADIO_BEGIN_RETRY_MS until it succeeds — rx is mains-powered and meant
+// to run unattended indefinitely, so retrying beats halting (a transient
+// fault like power-on before the radio rail settles self-heals without
+// anyone physically power-cycling the unit). Reports ERROR_URL_TEMPLATE
+// once on the first failure and RECOVERY_URL_TEMPLATE once if it had
+// failed at all before finally succeeding — never on every retry attempt.
+void radio_begin_with_retry() {
   int state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ,
                            LORA_SPREADING_FACTOR, LORA_CODING_RATE,
                            LORA_SYNC_WORD, LORA_TX_POWER_DBM,
                            LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
-  // rx is mains-powered and meant to run unattended indefinitely — unlike a
-  // halt, retrying here means a transient fault (power-on before the radio
-  // rail settles, a momentary SPI glitch) self-heals without someone having
-  // to physically power-cycle the unit. Reported to the server directly
-  // (rx has WiFi, unlike tx) rather than only a serial log nobody's
-  // watching — once on the first failure, once more on recovery, not on
-  // every retry attempt in between.
-  bool radio_begin_failed = (state != RADIOLIB_ERR_NONE);
-  if (radio_begin_failed) {
+  bool failed = (state != RADIOLIB_ERR_NONE);
+  if (failed) {
     char msg[64];
     snprintf(msg, sizeof(msg), "radio initialization failed with code %d", state);
     report_rx_condition(ERROR_URL_TEMPLATE, msg);
@@ -258,27 +276,79 @@ void setup() {
                          LORA_SYNC_WORD, LORA_TX_POWER_DBM,
                          LORA_PREAMBLE_LEN, LORA_TCXO_VOLTAGE, LORA_USE_LDO);
   }
-  if (radio_begin_failed) {
+  if (failed) {
     report_rx_condition(RECOVERY_URL_TEMPLATE, "radio initialization recovered");
   }
   Serial.println("radio init OK");
+}
+
+// Single attempt at (re)starting receive — reports ERROR_URL_TEMPLATE /
+// RECOVERY_URL_TEMPLATE only on a state transition (radio_listening
+// flipping), not on every call, so this is safe to call as often as
+// needed (every packet handled, every housekeeping tick while down)
+// without spamming the server. Doesn't retry on its own: once
+// startReceive() has failed, no IRQ fires to get back in here on its
+// own, so retrying is run_housekeeping()'s job, not this function's.
+void ensure_receiving() {
+  int state = radio.startReceive();
+  if (state == RADIOLIB_ERR_NONE) {
+    if (!radio_listening) {
+      radio_listening = true;
+      report_rx_condition(RECOVERY_URL_TEMPLATE, "radio receive recovered");
+    }
+    return;
+  }
+  Serial.printf("startReceive failed: %d\n", state);
+  if (radio_listening) {
+    radio_listening = false;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "radio startReceive failed with code %d", state);
+    report_rx_condition(ERROR_URL_TEMPLATE, msg);
+  }
+}
+
+// Full radio bring-up: radio.begin() (via radio_begin_with_retry(), which
+// retries forever and reports on its own), then re-arms DIO2-as-RF-switch
+// and the DIO1 receive-done callback — both get reset by begin() itself,
+// so a reinit after boot needs to redo them too, not just a fresh sketch
+// — then starts receiving. Used both by setup() and by run_housekeeping()
+// when plain startReceive() retries aren't enough to recover.
+void radio_reinit() {
+  radio_begin_with_retry();
 
   // The antenna switch is steered by DIO2, but the SX1262 doesn't route
   // DIO2 to the switch automatically out of reset — without this call,
   // transmit()/startReceive() report success but the switch never moves,
   // so nothing actually gets to the antenna.
-  state = radio.setDio2AsRfSwitch(true);
+  int state = radio.setDio2AsRfSwitch(true);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("setDio2AsRfSwitch failed: %d\n", state);
   }
 
+  radio.setDio1Action(set_rx_flag);
+  ensure_receiving();
+}
+
+void setup() {
+  Serial.begin(115200);
+  uint32_t t0 = millis();
+  while (!Serial && millis() - t0 < 3000) delay(10);
+
+  Serial.println("loragate rx");
+
+  pinMode(LORA_RFSW, OUTPUT);
+  digitalWrite(LORA_RFSW, HIGH);
+
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
+  radio_reinit();
+
+  // Deliberately after radio_reinit(), not before: that way the radio is
+  // already listening before this blocks for up to WIFI_TIMEOUT_MS, so a
+  // tx transmission arriving during a slow WiFi connect at boot isn't
+  // missed. report_rx_condition() calls above don't depend on this having
+  // run yet either — http_get() connects WiFi lazily on its own.
   wifi_connect();
 
-  radio.setDio1Action(set_rx_flag);
-  state = radio.startReceive();
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("startReceive failed: %d\n", state);
-  }
   last_rx_ms = millis();  // staleness clock starts now, not on first packet
   Serial.println("listening...");
 }
@@ -295,7 +365,7 @@ void handle_packet() {
 
   LoraPacket pkt;
   int st = radio.readData((uint8_t *)&pkt, sizeof(pkt));
-  radio.startReceive();  // resume listening immediately, before doing anything slow
+  ensure_receiving();  // resume listening immediately, before doing anything slow
 
   if (st != RADIOLIB_ERR_NONE) {
     Serial.printf("readData failed: %d\n", st);
@@ -320,7 +390,7 @@ void handle_packet() {
   if (tx_st != RADIOLIB_ERR_NONE) {
     Serial.printf("ack transmit failed: %d\n", tx_st);
   }
-  radio.startReceive();  // transmit() leaves the radio in standby
+  ensure_receiving();  // transmit() leaves the radio in standby
 
   float rssi = radio.getRSSI();
   float snr = radio.getSNR();
