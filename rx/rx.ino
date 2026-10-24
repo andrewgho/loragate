@@ -2,9 +2,10 @@
 //
 // Listens forever, acks every recognized packet, logs it, and forwards it
 // to the monitoring server (URLs in local.h — see README.md's Software
-// section for the protocol and architecture). No retries or error
-// handling on the HTTP side — a failed request just gets logged and
-// dropped.
+// section for the protocol and architecture). http_get() retries a
+// handful of times on a likely-transient failure (see its own comment);
+// a sustained outage still just gets logged and dropped — no persistent
+// queue, so an event lost to a long enough outage is gone for good.
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -17,6 +18,12 @@
 #include "local.h"
 
 #define WIFI_TIMEOUT_MS 10000
+
+// Attempts for one HTTP GET (the first try plus this many retries) before
+// giving up on a likely-transient failure — a brief DNS hiccup or the
+// server momentarily restarting, not a sustained outage (see http_get()).
+#define HTTP_GET_RETRIES 2
+#define HTTP_GET_RETRY_DELAY_MS 750
 
 // How long to wait between radio.begin() retries at boot if the radio
 // doesn't come up right away.
@@ -150,9 +157,16 @@ void run_housekeeping() {
   }
 }
 
-// Performs an HTTP GET against `base_url`. Reconnects WiFi first if
-// needed; if that fails, logs it and gives up — no retry on the HTTP
-// side, a failed request just gets logged and dropped.
+// Performs an HTTP GET against `base_url`, retrying up to HTTP_GET_RETRIES
+// times on a response that looks transient: a negative code is
+// HTTPClient's own connection-level failure (timeout, refused, DNS, ...),
+// and 5xx is the server itself erroring — both are worth another attempt.
+// A 4xx means the request itself is wrong (a bad URL), where retrying
+// can't help, so that's left alone. Reconnects WiFi first (once, not
+// per-attempt) if needed; if that fails, logs it and gives up without
+// trying the HTTP GET at all. Unlike tx's radio-level ack/retry, there's
+// no persistent queue behind this — give up after the last attempt and
+// the event is gone for good, logged but never retried again.
 void http_get(const char *base_url) {
   wifi_connect();
   if (WiFi.status() != WL_CONNECTED) {
@@ -160,14 +174,23 @@ void http_get(const char *base_url) {
     return;
   }
 
-  Serial.printf("GET %s\n", base_url);
+  int code = 0;
+  for (int attempt = 0; attempt <= HTTP_GET_RETRIES; attempt++) {
+    Serial.printf("GET %s%s\n", base_url, attempt > 0 ? " (retry)" : "");
+    HTTPClient http;
+    http.begin(base_url);
+    http.setReuse(false);
+    code = http.GET();
+    http.end();
 
-  HTTPClient http;
-  http.begin(base_url);
-  http.setReuse(false);
-  int code = http.GET();
+    bool transient_failure = (code < 0 || code >= 500);
+    if (!transient_failure) break;
+    if (attempt < HTTP_GET_RETRIES) {
+      Serial.printf("transient failure (%d); retrying in %dms\n", code, HTTP_GET_RETRY_DELAY_MS);
+      delay(HTTP_GET_RETRY_DELAY_MS);
+    }
+  }
   Serial.printf("Response: %d\n", code);
-  http.end();
 }
 
 // Formats a proxied transmitter-event URL (carrying seq/txno placeholders,
