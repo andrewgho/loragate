@@ -34,18 +34,28 @@ would be, and avoids a GPIO ever seeing the beacon's own voltage or any
 motor kickback directly.
 
 ```
-VBUS (5V) ──────────────────────────────────┬── beacon +5V
-                                              │
-                                         [beacon]
-                                              │
-                                         beacon GND ── MOSFET drain
-                                                         │
+VBUS (5V) ──────────────────────────┬──────────────┬── beacon +5V
+                                     │              │
+                              1N4001 (optional —  [beacon]
+                              see note below;        │
+                              cathode up, anode       │
+                              down)                   │
+                                     │              │
+                                     └──────┬───────┘
+                                            │
+                                     beacon GND / MOSFET drain
+                                            │
 GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ── GND
                        │
                      [10kΩ]
                        │
                       GND
 ```
+
+The diode sits in parallel with the beacon itself — same two nodes,
+opposite polarity, so it's reverse-biased (not conducting) during normal
+operation and only ever clamps a reverse spike if the switched node
+tries to fly below ground.
 
 - **VBUS** for power — the XIAO's raw USB 5V pass-through, not current-
   limited by the board itself. Confirm the beacon's actual draw (bench
@@ -57,9 +67,14 @@ GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ──
   the brief window at boot before `pinMode()`/`digitalWrite()` run, since
   GPIO state is indeterminate for a moment right after reset.
 - **Flyback diode** across the beacon's +5V/GND leads (cathode to +5V):
-  cheap insurance in case the "rotating" beacon has a small motor inside
-  rather than being purely LED-driven — harmless either way, so included
-  regardless of which it turns out to be.
+  only matters if there's an inductive load (a small motor) inside. At
+  ~1cm tall and ~1cm diameter, this unit is almost certainly too small
+  for one — more likely a ring of LEDs flashed in sequence to fake a
+  rotating sweep, which needs no flyback protection at all. Left in the
+  diagram and BOM as optional, cheap insurance rather than removed
+  outright, since it hasn't been powered up yet to confirm — but
+  deprioritized; skip it unless something unexpected shows up on the
+  bench.
 - **Third wire (mode-select)**: not wired up yet. These are typically a
   standard RC servo-style PWM input (~50Hz, pulse width in the 1-2ms
   range selecting a mode) — easy to generate from the C6's hardware PWM
@@ -73,7 +88,7 @@ GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ──
 | Part | Qty | Notes |
 |---|---|---|
 | IRLZ44N (TO-220, logic-level N-channel MOSFET) | 1 | Vgs(th) ~1-2V, switches well under 3.3V drive — comfortable margin over a beacon this small; standard, cheap, always-in-stock choice |
-| 1N4001 (DO-41 rectifier diode) | 1 | flyback protection, cathode to beacon +5V |
+| 1N4001 (DO-41 rectifier diode) | 1, optional | flyback protection, cathode to beacon +5V — low priority given the unit's size (~1cm), almost certainly LED-only, not motor-driven |
 | 220Ω resistor | 1 | MOSFET gate series resistor |
 | 10kΩ resistor | 1 | gate pull-down |
 | 3-pin 0.1" header or JST-XH (THT), or solder direct | 1 | optional — pick based on whatever connector's already on the beacon's factory harness |
@@ -95,8 +110,12 @@ the beacon's actual current draw either way; 470Ω assumes a modest
 - [ ] If *neither* works, the beacon needs an active PWM signal just to
       function, not merely to pick a mode — revisit the design before
       wiring anything permanently.
-- [ ] Confirm whether the beacon is motor-driven or LED-only (informs
-      whether the flyback diode is load-bearing or just insurance).
+- [x] Confirm whether the beacon is motor-driven or LED-only — resolved
+      by physical inspection: ~1cm tall/diameter, too small for a motor,
+      almost certainly a ring of sequenced LEDs faking a rotating sweep.
+      Flyback diode downgraded to optional/skippable above on that basis
+      (not yet powered up to fully confirm, hence "almost certainly" and
+      not a hard removal).
 - [ ] Decide the connector approach once the beacon's factory harness is
       in hand.
 
