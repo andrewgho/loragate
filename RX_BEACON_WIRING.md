@@ -1,10 +1,12 @@
 # Receiver held-open beacon (draft)
 
-**Draft/working doc — not yet bench-tested or built.** Once the design's
-confirmed against the real beacon hardware, fold the relevant parts into
-`WIRING.md` (or split into a standalone `rx` wiring doc — there isn't one
-yet; `WIRING.md` today only covers the transmitter build) and retire this
-file.
+**Draft/working doc.** The design itself is now confirmed against the
+real beacon hardware (every item in the bench-test checklist below is
+checked off) — what's left is the physical build (not yet assembled)
+and the firmware hook (not yet written). Once both of those are done,
+fold the relevant parts into `WIRING.md` (or split into a standalone
+`rx` wiring doc — there isn't one yet; `WIRING.md` today only covers the
+transmitter build) and retire this file.
 
 ## What this adds
 
@@ -71,9 +73,19 @@ GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ──
 | IRLZ44N (TO-220, logic-level N-channel MOSFET) | 1 | Vgs(th) ~1-2V, switches well under 3.3V drive — wildly overkill margin for a confirmed ~20-25mA load, but it's the standard, cheap, always-in-stock choice |
 | 220Ω resistor | 1 | MOSFET gate series resistor |
 | 10kΩ resistor | 1 | gate pull-down |
-| 3-pin 0.1" header or JST-XH (THT), or solder direct | 1 | optional — pick based on whatever connector's already on the beacon's factory harness |
+| 1x3 0.1"/2.54mm male pin header (THT, straight or right-angle per mounting) | 1 | mates directly with the beacon's factory connector — confirmed a standard 1x3 DuPont-style female header, no adapter needed. Populate all 3 positions even though only 2 are wired (see note below) so the connector always seats fully and can't be mis-plugged by one position. |
 
 No flyback diode — see "Confirmed on the bench" below.
+
+**The header's "GND" position connects to the MOSFET drain, not
+straight to the board's GND rail** — that's the switched node (see the
+Circuit diagram above). Wiring it directly to GND instead would bypass
+the switch entirely and leave the beacon permanently on. Also: wire the
+header's +5V/GND positions to match whichever two of the beacon's three
+factory-connector pins were confirmed as +5V and GND on the bench —
+DuPont pinout order isn't standardized across RC-accessory vendors, so
+don't assume a specific position without checking against what was
+already tested working.
 
 **Alternative to the MOSFET**: a 2N2222A/PN2222A (TO-92 NPN) with the
 220Ω gate resistor swapped for a ~470Ω base resistor — equally fine for
@@ -115,8 +127,10 @@ run — pattern didn't change):
       the signal wire at all — see "Optional: mode-select from software"
       below for the separate, optional addition if more than the default
       mode is ever wanted.
-- [ ] Decide the connector approach once the beacon's factory harness is
-      in hand.
+- [x] Decide the connector approach once the beacon's factory harness is
+      in hand — confirmed standard 1x3 2.54mm DuPont-style female
+      header. Matching 1x3 male header on the rx side, see the Parts
+      table above.
 
 ## Optional: mode-select from software
 
