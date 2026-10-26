@@ -58,13 +58,11 @@ GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ──
 - **No flyback diode.** Originally included as cheap insurance against
   the beacon turning out to be motor-driven; dropped once hooked up and
   measured — see "Confirmed on the bench" below for why.
-- **Third wire (mode-select)**: not wired up yet. These are typically a
-  standard RC servo-style PWM input (~50Hz, pulse width in the 1-2ms
-  range selecting a mode) — easy to generate from the C6's hardware PWM
-  (`ledcAttach()`/`ledcWrite()`) if wanted later, but needs its own GPIO,
-  separate from the on/off switch above, since it'd need to be driven
-  continuously rather than just held high/low. See the bench-test
-  checklist below for what to confirm first.
+- **Third wire (mode-select)**: left disconnected — confirmed on the
+  bench that floating gives the default rotating pattern, which is what
+  this design wants. See "Optional: mode-select from software" below
+  for how to wire and drive it instead, if a non-default mode is ever
+  wanted.
 
 ## Parts (through-hole only — no custom PCB for rx)
 
@@ -111,16 +109,69 @@ run — pattern didn't change):
 - [x] Confirm whether the beacon is motor-driven or LED-only —
       confirmed LED-only (strobed ring, no motor) both visually and via
       the current waveform shape.
-- [ ] Power the beacon with +5V/GND only, signal wire floating — does it
-      run its default pattern? (Sounds like this was already effectively
-      answered by the measurement run — confirm explicitly if not.)
-- [ ] If not, try tying signal to GND next — common default-safe idle
-      state for this class of module.
-- [ ] If *neither* works, the beacon needs an active PWM signal just to
-      function, not merely to pick a mode — revisit the design before
-      wiring anything permanently.
+- [x] Power the beacon with +5V/GND only, signal wire floating — does it
+      run its default pattern? Confirmed yes: floating gives the
+      rotating-beacon pattern. So the core design needs no connection to
+      the signal wire at all — see "Optional: mode-select from software"
+      below for the separate, optional addition if more than the default
+      mode is ever wanted.
 - [ ] Decide the connector approach once the beacon's factory harness is
       in hand.
+
+## Optional: mode-select from software
+
+Not needed for the core design (confirmed above — floating gives the
+default rotating pattern already) and not planned for now, but worth
+sketching since it's genuinely easy if ever wanted.
+
+**Wiring**: beacon's signal wire straight to **D7/GPIO17** (the other
+pin this doc set aside), no transistor involved this time — unlike the
+beacon's own +5V/GND, this is just a logic-level signal into what's
+almost certainly a microcontroller input on the beacon's own driver
+board, not something that needs power-level switching. A small series
+resistor (220-470Ω) between the GPIO and the signal wire is cheap
+insurance, same reasoning as the gate resistor elsewhere in this doc,
+but isn't expected to be load-bearing.
+
+**Signal**: these inputs are standard RC servo/ESC-style PWM — 50Hz
+(20ms period), pulse width somewhere in the 1000-2000µs range selecting
+a mode. There's no published mapping for this specific unit (these
+aren't standardized beyond "50Hz, roughly 1-2ms"), so it'd take an
+empirical sweep: hold each pulse width for a second or two across that
+range in ~50-100µs steps and log what pattern plays, to build a mode
+table by observation.
+
+**Firmware**: the ESP32-C6's LEDC peripheral generates this in hardware
+once configured — no per-loop bit-banging needed, it keeps outputting
+the waveform on its own until told to change:
+
+```cpp
+#define BEACON_MODE_PIN      7      // D7/GPIO17
+#define BEACON_PWM_FREQ_HZ   50
+#define BEACON_PWM_BITS      16     // plenty of duty-cycle resolution
+
+void setup() {
+  ledcAttach(BEACON_MODE_PIN, BEACON_PWM_FREQ_HZ, BEACON_PWM_BITS);
+  set_beacon_mode_us(1500);  // pick a starting pulse width once mapped
+}
+
+// pulse_us: the pulse width (microseconds) to hold, out of a 20ms
+// (50Hz) period — this is a "set and leave running" call, not
+// something to call every loop() iteration.
+void set_beacon_mode_us(uint32_t pulse_us) {
+  const uint32_t period_us = 1000000UL / BEACON_PWM_FREQ_HZ;
+  const uint32_t max_duty = (1UL << BEACON_PWM_BITS) - 1;
+  uint32_t duty = (uint64_t)pulse_us * max_duty / period_us;
+  ledcWrite(BEACON_MODE_PIN, duty);
+}
+```
+
+(`ledcAttach`/`ledcWrite` is the current Arduino-ESP32 core 3.x API —
+older examples online use `ledcSetup`/`ledcAttachPin`, which this core
+no longer has.) This runs entirely independent of the on/off power
+switch on D6 — the PWM signal can stay configured and running
+regardless of whether the beacon's own power is actually on; it just
+does nothing while unpowered.
 
 ## Not yet done: firmware
 
