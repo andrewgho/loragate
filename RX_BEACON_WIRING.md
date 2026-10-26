@@ -34,17 +34,12 @@ would be, and avoids a GPIO ever seeing the beacon's own voltage or any
 motor kickback directly.
 
 ```
-VBUS (5V) ──────────────────────────┬──────────────┬── beacon +5V
-                                     │              │
-                              1N4001 (optional —  [beacon]
-                              see note below;        │
-                              cathode up, anode       │
-                              down)                   │
-                                     │              │
-                                     └──────┬───────┘
-                                            │
-                                     beacon GND / MOSFET drain
-                                            │
+VBUS (5V) ──────────────────────────────────┬── beacon +5V
+                                              │
+                                         [beacon]
+                                              │
+                                         beacon GND ── MOSFET drain
+                                                         │
 GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ── GND
                        │
                      [10kΩ]
@@ -52,29 +47,17 @@ GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ──
                       GND
 ```
 
-The diode sits in parallel with the beacon itself — same two nodes,
-opposite polarity, so it's reverse-biased (not conducting) during normal
-operation and only ever clamps a reverse spike if the switched node
-tries to fly below ground.
-
-- **VBUS** for power — the XIAO's raw USB 5V pass-through, not current-
-  limited by the board itself. Confirm the beacon's actual draw (bench
-  multimeter, or its own spec if marked) against the USB adapter's rated
-  output before relying on this; small RC-accessory beacons are typically
-  well under 200mA, comfortably inside what any adapter powering the
-  ESP32C6 can also spare, but not yet confirmed for this specific unit.
+- **VBUS** for power — the XIAO's raw USB 5V pass-through, not
+  current-limited by the board itself. Confirmed no concern: PPK2
+  measurement of the actual unit shows ~20mA average, ~25mA peak (see
+  "Confirmed on the bench" below) — nowhere near enough to worry about
+  the USB adapter's budget.
 - **10kΩ pull-down** on the gate: keeps the beacon reliably off during
   the brief window at boot before `pinMode()`/`digitalWrite()` run, since
   GPIO state is indeterminate for a moment right after reset.
-- **Flyback diode** across the beacon's +5V/GND leads (cathode to +5V):
-  only matters if there's an inductive load (a small motor) inside. At
-  ~1cm tall and ~1cm diameter, this unit is almost certainly too small
-  for one — more likely a ring of LEDs flashed in sequence to fake a
-  rotating sweep, which needs no flyback protection at all. Left in the
-  diagram and BOM as optional, cheap insurance rather than removed
-  outright, since it hasn't been powered up yet to confirm — but
-  deprioritized; skip it unless something unexpected shows up on the
-  bench.
+- **No flyback diode.** Originally included as cheap insurance against
+  the beacon turning out to be motor-driven; dropped once hooked up and
+  measured — see "Confirmed on the bench" below for why.
 - **Third wire (mode-select)**: not wired up yet. These are typically a
   standard RC servo-style PWM input (~50Hz, pulse width in the 1-2ms
   range selecting a mode) — easy to generate from the C6's hardware PWM
@@ -87,35 +70,55 @@ tries to fly below ground.
 
 | Part | Qty | Notes |
 |---|---|---|
-| IRLZ44N (TO-220, logic-level N-channel MOSFET) | 1 | Vgs(th) ~1-2V, switches well under 3.3V drive — comfortable margin over a beacon this small; standard, cheap, always-in-stock choice |
-| 1N4001 (DO-41 rectifier diode) | 1, optional | flyback protection, cathode to beacon +5V — low priority given the unit's size (~1cm), almost certainly LED-only, not motor-driven |
+| IRLZ44N (TO-220, logic-level N-channel MOSFET) | 1 | Vgs(th) ~1-2V, switches well under 3.3V drive — wildly overkill margin for a confirmed ~20-25mA load, but it's the standard, cheap, always-in-stock choice |
 | 220Ω resistor | 1 | MOSFET gate series resistor |
 | 10kΩ resistor | 1 | gate pull-down |
 | 3-pin 0.1" header or JST-XH (THT), or solder direct | 1 | optional — pick based on whatever connector's already on the beacon's factory harness |
 
+No flyback diode — see "Confirmed on the bench" below.
+
 **Alternative to the MOSFET**: a 2N2222A/PN2222A (TO-92 NPN) with the
 220Ω gate resistor swapped for a ~470Ω base resistor — equally fine for
-a load this size, and maybe more likely to already be on hand. Confirm
-the beacon's actual current draw either way; 470Ω assumes a modest
-(under a few hundred mA) load.
+a load this size (confirmed ~20-25mA, nowhere near either part's
+limits), and maybe more likely to already be on hand. 470Ω gives
+comfortable margin even at a conservative hFE estimate; a higher value
+(2.2-4.7kΩ) would work too, if that's what's on hand instead.
+
+## Confirmed on the bench
+
+Beacon hooked up and measured directly with a Nordic PPK2
+(`/var/tmp/beacon_current.png`, both a brief pulse and a multi-second
+run — pattern didn't change):
+
+- **~20mA average, ~25mA peak, no inrush at turn-on.** A motor's
+  starting/stall current would show up as a sharp spike several times
+  the running current right at power-on; instead there's a ~250ms
+  trough at ~7mA before it settles to ~20mA — consistent with a driver
+  IC's own power-on sequencing, not a motor spinning up. The steady-state
+  waveform itself (small step-like dips and spikes, no ringing or decay
+  curves) matches a ring of LEDs being switched in different
+  combinations to fake rotation, not an inductive load.
+- **No flyback diode needed** — there's no inductive element to protect
+  against. Removed from the design on this basis (see above), not just
+  deprioritized.
+- **VBUS headroom is a non-issue** at this current — no further check
+  needed there.
 
 ## Bench-test checklist before finalizing
 
-- [ ] Measure the beacon's actual current draw; confirm against the USB
-      adapter's rated output.
+- [x] Measure the beacon's actual current draw — ~20mA avg / ~25mA peak,
+      see "Confirmed on the bench" above.
+- [x] Confirm whether the beacon is motor-driven or LED-only —
+      confirmed LED-only (strobed ring, no motor) both visually and via
+      the current waveform shape.
 - [ ] Power the beacon with +5V/GND only, signal wire floating — does it
-      run its default pattern?
+      run its default pattern? (Sounds like this was already effectively
+      answered by the measurement run — confirm explicitly if not.)
 - [ ] If not, try tying signal to GND next — common default-safe idle
       state for this class of module.
 - [ ] If *neither* works, the beacon needs an active PWM signal just to
       function, not merely to pick a mode — revisit the design before
       wiring anything permanently.
-- [x] Confirm whether the beacon is motor-driven or LED-only — resolved
-      by physical inspection: ~1cm tall/diameter, too small for a motor,
-      almost certainly a ring of sequenced LEDs faking a rotating sweep.
-      Flyback diode downgraded to optional/skippable above on that basis
-      (not yet powered up to fully confirm, hence "almost certainly" and
-      not a hard removal).
 - [ ] Decide the connector approach once the beacon's factory harness is
       in hand.
 
