@@ -2,21 +2,21 @@
 // Andrew Ho <andrew@zeuscat.com>
 
 // Slop
-s = 0.3;
+s = 0.2;
 
-// Protoboard (pb prefix)
-pb_length        = 50.8+s;  // Measured long edge (along horizontal rows)
-pb_width         = 43.2+s;  // Measured short edge (along vertical power rails)
+// PCB (pb prefix)
+pb_length        = 30.0+s;  // Measured short edge (top and bottom)
+pb_width         = 58.5+s;  // Measured tall edge (modules up the sides)
 pb_radius        =  2;      // Measured approximate edge radius
-pb_thickness     =  1.5;    // Thickness of just the PCB itself
-pb_gutter_width  =  1.8;    // Safe margin to avoid solder joints
+pb_thickness     =  1.8;    // Height of the wall that snugs the PCB itself
+pb_gutter_width  =  1.2;    // Safe margin to avoid solder joints
 pb_gutter_height =  2;      // Safe margin to avoid solder joints
 
 // Battery holder (bh prefix)
 bh_length        = 48.2+s;  // Short horizontal edge (along battery terminals)
 bh_width         = 58.5+s;  // Long vertical edge (parallel to cells)
 bh_height        = 16.4;    // Total depth from case bottom to top of cells
-bh_side_height   =  7.0;    // Height from case bottom to finger gaps
+bh_side_height   =  8.0;    // Height from case bottom to finger gaps
 bh_wire_offset   = 12.5+s;  // Distance from right edge that wires come out
 
 // Our parameters
@@ -24,7 +24,7 @@ shell_thickness  =  1.5;    // Thickness of horizontal base plate
 shell_radius     =  1;      // Horizontal radius like for finger gap
 edge_thickness   =  2.5;    // Thickness around edge
 edge_radius      =  2.5;    // Radius around edge
-pb_center_gap    = 30;      // Leave this much room for finger prying
+pb_center_gap    = 18;      // Leave this much room for finger prying
 
 // Various derived parameters
 edge_thickness2  = edge_thickness * 2;
@@ -150,14 +150,8 @@ module mount() {
   pb_sled();
   translate([pb_ext_length, 0]) bh_sled();
   // Undo the edge curves where the pieces meet
-  difference() {
-    translate([pb_ext_length - edge_thickness, 0]) {
-      cube([edge_thickness2, pb_ext_width + edge_radius, pb_ext_height]);
-    }
-    // And cut out a nice curved join, just for aesthetics
-    translate([pb_ext_length - edge_radius, pb_ext_width + edge_radius, -e]) {
-      cylinder(r = edge_radius, h = pb_ext_height + e2);
-    }
+  translate([pb_ext_length - edge_thickness, 0]) {
+    cube([edge_thickness2, pb_ext_width, pb_ext_height]);
   }
 }
 
