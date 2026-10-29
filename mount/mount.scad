@@ -5,7 +5,7 @@
 s = 0.2;
 
 // PCB (pb prefix)
-pb_length        = 30.0+s;  // Measured short edge (top and bottom)
+pb_length        = 30.4+s;  // Measured short edge (top and bottom)
 pb_width         = 58.5+s;  // Measured tall edge (modules up the sides)
 pb_radius        =  2;      // Measured approximate edge radius
 pb_thickness     =  1.8;    // Height of the wall that snugs the PCB itself
@@ -13,20 +13,20 @@ pb_gutter_width  =  1.2;    // Safe margin to avoid solder joints
 pb_gutter_height =  2;      // Safe margin to avoid solder joints
 
 // Battery holder (bh prefix)
-bh_length        = 48.6+s;  // Short horizontal edge (along battery terminals)
+bh_length        = 48.5+s;  // Short horizontal edge (along battery terminals)
 bh_width         = 58.5+s;  // Long vertical edge (parallel to cells)
 bh_height        = 16.4;    // Total depth from case bottom to top of cells
-bh_side_height   =  8.0;    // Height from case bottom to finger gaps
+bh_side_height   =  8.2;    // Height from case bottom to finger gaps
 bh_wire_offset   = 12.5+s;  // Distance from right edge that wires come out
 
 // Mounting posts on box (mp prefix)
-mp_distance      = 100.0;   // Distance between mounting hole centers
-mp_diameter      =   9.4;   // Outer diameter of mounting hole posts
+mp_distance      = 102.0;   // Distance between mounting hole centers
+mp_diameter      =  10.6;   // Outer diameter of mounting hole posts
 mp_height        =   6.8;   // How high the mounting hole posts rise
 mp_filet         =   0.8;   // Filet size for bottom
 
 // Our parameters
-shell_thickness  =  1.5;    // Thickness of horizontal base plate
+shell_thickness  =  2.1;    // Thickness of horizontal base plate
 shell_radius     =  1;      // Horizontal radius like for finger gap
 edge_thickness   =  2.5;    // Thickness around edge
 edge_radius      =  2.5;    // Radius around edge
