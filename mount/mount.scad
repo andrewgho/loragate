@@ -13,11 +13,17 @@ pb_gutter_width  =  1.2;    // Safe margin to avoid solder joints
 pb_gutter_height =  2;      // Safe margin to avoid solder joints
 
 // Battery holder (bh prefix)
-bh_length        = 48.2+s;  // Short horizontal edge (along battery terminals)
+bh_length        = 48.6+s;  // Short horizontal edge (along battery terminals)
 bh_width         = 58.5+s;  // Long vertical edge (parallel to cells)
 bh_height        = 16.4;    // Total depth from case bottom to top of cells
 bh_side_height   =  8.0;    // Height from case bottom to finger gaps
 bh_wire_offset   = 12.5+s;  // Distance from right edge that wires come out
+
+// Mounting posts on box (mp prefix)
+mp_distance      = 100.0;   // Distance between mounting hole centers
+mp_diameter      =   9.4;   // Outer diameter of mounting hole posts
+mp_height        =   6.8;   // How high the mounting hole posts rise
+mp_filet         =   0.8;   // Filet size for bottom
 
 // Our parameters
 shell_thickness  =  1.5;    // Thickness of horizontal base plate
@@ -34,6 +40,8 @@ pb_ext_height = shell_thickness + pb_gutter_height + pb_thickness;
 bh_ext_length = bh_length + edge_thickness2;
 bh_ext_width = bh_width + edge_thickness2;
 bh_ext_height = shell_thickness + bh_side_height;
+int_ext_length = pb_ext_length + bh_ext_length;
+int_ext_width = max(pb_ext_width, bh_ext_width);
 
 // Rendering parameters
 e = 0.1;
@@ -89,13 +97,13 @@ module pb_sled() {
                           pb_radius);
         }
       }
-      // Gutter that holds up the board, giving room for protruding solder joints
+      // Gutter that holds up the board, with room for protruding solder joints
       translate([edge_thickness, edge_thickness, shell_thickness]) {
         pb_cavity_length = pb_length - (pb_gutter_width * 2);
         pb_cavity_width = pb_width - (pb_gutter_width * 2);
         difference() {
           rounded_cube_xy(pb_length, pb_width, pb_gutter_height, pb_radius);
-          // Cut out inner cavity that directly holds the battery holder
+          // Cut out inner cavity that directly holds the PCB
           translate([pb_gutter_width, pb_gutter_width, -e]) {
             rounded_cube_xy(pb_cavity_length, pb_cavity_width,
                             pb_gutter_height + e2, pb_radius);
@@ -109,7 +117,7 @@ module pb_sled() {
                  pb_ext_height - shell_thickness, shell_radius);
     }
     // Cut out bottom void to save material and help poke out protoboard
-    pb_void_length = pb_ext_length / 2;
+    pb_void_length = pb_ext_length / 3;
     pb_void_width = pb_ext_width / 2;
     translate([(pb_ext_length - pb_void_length) / 2,
                (pb_ext_width - pb_void_width) / 2, -e]) {
@@ -155,4 +163,42 @@ module mount() {
   }
 }
 
-mount();
+translate([-int_ext_length / 2, -int_ext_width / 2, 0]) mount();
+
+// PCB side wrap around mounting post
+translate([-mp_distance / 2, 0]) {
+  difference() {
+    hull() {
+      cylinder(d = mp_diameter + edge_thickness2, h = mp_height);
+      translate([(mp_distance / 2) - (int_ext_length / 2), -mp_diameter]) {
+        cube([edge_thickness, mp_diameter * 2, pb_ext_height]);
+      }
+    }
+    translate([0, 0, -e]) {
+      // Cut out mounting post shaft
+      cylinder(d = mp_diameter, h = mp_height + e2);
+      // Filet the bottom
+      cylinder(d1 = mp_diameter + (mp_filet * 2), d2 = mp_diameter,
+               h = mp_filet);
+    }
+  }
+}
+
+// Battery side wrap around mounting post
+translate([mp_distance / 2, 0]) {
+  difference() {
+    hull() {
+      cylinder(d = mp_diameter + edge_thickness2, h = mp_height);
+      translate([(-mp_distance / 2) + (int_ext_length / 2) - edge_thickness, -mp_diameter]) {
+        cube([edge_thickness, mp_diameter * 2, mp_height]);
+      }
+    }
+    translate([0, 0, -e]) {
+      // Cut out mounting post shaft
+      cylinder(d = mp_diameter, h = mp_height + e2);
+      // Filet the bottom
+      cylinder(d1 = mp_diameter + (mp_filet * 2), d2 = mp_diameter,
+               h = mp_filet);
+    }
+  }
+}
