@@ -19,6 +19,13 @@
 
 #define WIFI_TIMEOUT_MS 10000
 
+// Held-open warning beacon — GPIO drives a low-side MOSFET switching the
+// beacon's own 5V/GND; see RX_BEACON_WIRING.md for the circuit. Testing
+// phase only: beacon_should_be_on() below currently just mirrors
+// door_is_open; see that function's comment for the intended later
+// behavior and why changing it is the only edit needed.
+#define BEACON_PIN 16  // D6/GPIO16
+
 // Attempts for one HTTP GET (the first try plus this many retries) before
 // giving up on a likely-transient failure — a brief DNS hiccup or the
 // server momentarily restarting, not a sustained outage (see http_get()).
@@ -71,6 +78,23 @@ bool startup_log_sent = false;
 bool door_is_open = false;
 uint32_t door_opened_at_ms = 0;  // meaningful only while door_is_open
 bool short_open_alerted = false; // true once we've reported this open episode
+
+// Whether the held-open beacon should currently be lit. Testing phase:
+// on for the entire time the door's open. The intended later behavior —
+// lit only once the 45s short-open or 300s tx-confirmed held-open
+// warning has actually fired, not immediately on open (e.g.
+// `return short_open_alerted;`) — only needs this one function changed:
+// every call site re-evaluates through it (see update_beacon()) rather
+// than setting the pin directly, and update_beacon() is already called
+// once per run_housekeeping() tick, which is where short_open_alerted
+// itself gets set.
+bool beacon_should_be_on() {
+  return door_is_open;
+}
+
+void update_beacon() {
+  digitalWrite(BEACON_PIN, beacon_should_be_on() ? HIGH : LOW);
+}
 
 // Staleness tracking — last_rx_ms starts at the end of setup() (not
 // "whenever the first packet arrives"), so silence from boot onward
@@ -147,6 +171,12 @@ void run_housekeeping() {
     short_open_alerted = true;
     report_door_open_past(SHORT_OPEN_THRESHOLD_SECONDS, nullptr);
   }
+
+  // Backstop, not just the handle_packet() call sites: re-evaluates
+  // every tick regardless of what changed, so it can't drift out of
+  // sync with door_is_open/short_open_alerted no matter how they got
+  // there.
+  update_beacon();
 
   uint32_t silence_s = (millis() - last_rx_ms) / 1000UL;
   if (!stale_alerted && silence_s >= STALE_WINDOW_SECONDS) {
@@ -362,6 +392,9 @@ void setup() {
   pinMode(LORA_RFSW, OUTPUT);
   digitalWrite(LORA_RFSW, HIGH);
 
+  pinMode(BEACON_PIN, OUTPUT);
+  update_beacon();  // off at boot — door_is_open starts false
+
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
   radio_reinit();
 
@@ -444,6 +477,7 @@ void handle_packet() {
       door_is_open = true;
       door_opened_at_ms = millis();
       short_open_alerted = false;
+      update_beacon();
       notify_transmitter_event(DOOR_OPEN_URL_TEMPLATE, pkt.seq, pkt.txno);
       break;
     case PKT_DOOR_CLOSE:
@@ -451,12 +485,14 @@ void handle_packet() {
                     (unsigned long)pkt.seq, pkt.txno, rssi, snr);
       door_is_open = false;
       short_open_alerted = false;
+      update_beacon();
       notify_transmitter_event(DOOR_CLOSE_URL_TEMPLATE, pkt.seq, pkt.txno);
       break;
     case PKT_DOOR_HELD_OPEN:
       Serial.printf("RX door held open seq=%lu txno=%u rssi=%.1fdBm snr=%.1fdB\n",
                     (unsigned long)pkt.seq, pkt.txno, rssi, snr);
       door_is_open = true;  // defensive — should already be true
+      update_beacon();
       report_door_open_past(TX_HELD_OPEN_SECONDS, &pkt);
       break;
     case PKT_DIAGNOSTIC: {
