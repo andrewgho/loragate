@@ -24,7 +24,15 @@
 // phase only: beacon_should_be_on() below currently just mirrors
 // door_is_open; see that function's comment for the intended later
 // behavior and why changing it is the only edit needed.
-#define BEACON_PIN 16  // D6/GPIO16
+//
+// D0, not D6: D6/GPIO16 is this chip's UART0 TX pin, fixed at the
+// hardware level (not reroutable via the GPIO matrix like most
+// peripherals). Confirmed on the bench: gate sat at a constant ~3V no
+// matter what this code wrote to it or what the door was doing, because
+// something below the application level still had a claim on that pin.
+// D0/GPIO0 is genuinely free on rx (no reed switch here, so none of
+// tx's D0/Wio-button sharing concerns apply — see RX_BEACON_WIRING.md).
+#define BEACON_PIN 0  // D0/GPIO0
 
 // Attempts for one HTTP GET (the first try plus this many retries) before
 // giving up on a likely-transient failure — a brief DNS hiccup or the

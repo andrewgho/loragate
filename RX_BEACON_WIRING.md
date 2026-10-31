@@ -1,12 +1,13 @@
 # Receiver held-open beacon (draft)
 
-**Draft/working doc.** The design itself is now confirmed against the
-real beacon hardware (every item in the bench-test checklist below is
-checked off) — what's left is the physical build (not yet assembled)
-and the firmware hook (not yet written). Once both of those are done,
-fold the relevant parts into `WIRING.md` (or split into a standalone
-`rx` wiring doc — there isn't one yet; `WIRING.md` today only covers the
-transmitter build) and retire this file.
+**Draft/working doc.** Firmware's written and flashed; hardware is
+breadboarded and under active bench debugging — the original D6 pin
+choice turned out not to work (see "Pin: D0 / GPIO0" below) and the
+fix (move to D0) is flashed but not yet reconfirmed on the bench. Once
+that's confirmed and the circuit's buttoned up, fold the relevant parts
+into `WIRING.md` (or split into a standalone `rx` wiring doc — there
+isn't one yet; `WIRING.md` today only covers the transmitter build) and
+retire this file.
 
 ## What this adds
 
@@ -15,17 +16,52 @@ is reported held open, off otherwise. Everything else about rx (radio,
 WiFi, the custom PCB work so far — which is tx-only; rx is still the
 original stacked-protoboard build) is unchanged by this addition.
 
-## Pin: D6 / GPIO16
+## Pin: D0 / GPIO0 (originally tried D6 — didn't work, see below)
 
+**D6/GPIO16 was the original choice** — reasoned at the time that since
 rx's `Serial` runs over native USB (no `CDCOnBoot=default` like tx needs
-for monitoring after deep sleep, since rx never sleeps), so D6/D7
-(GPIO16/17) are genuinely unused by rx's firmware today — unlike tx,
-where the new PCB commits them to a UART breakout header. Using D6
-instead of D0 also sidesteps the Wio-SX1262 HAT's onboard-button-shares-
-D0 issue entirely (see `WIRING.md`'s "The Wio-SX1262 HAT's onboard button
-shares D0"): rx never uses D0 for anything, so there's nothing to bypass
-— the stack can stay exactly as it came from the manufacturer, no pin
-snipping or bridge wire needed. D7 stays free for whatever comes up next.
+for monitoring after deep sleep), D6/D7 (GPIO16/17) would be genuinely
+unused by rx's firmware. **That assumption was wrong, confirmed on the
+bench**: with the beacon wired to D6, the MOSFET gate measured a
+constant ~3V regardless of door state or anything the firmware wrote to
+the pin. Root cause, confirmed against Espressif/Arduino-ESP32
+documentation: GPIO16/17 are this chip's UART0 TX/RX pins, fixed at the
+hardware level (not reroutable via the GPIO matrix like most
+peripherals), and the Arduino-ESP32 core's USB-CDC build still routes
+debug/console output through UART0 even when `Serial` itself is bound
+to native USB — so something below the application level had an
+independent claim on the pin the whole time, regardless of
+`CDCOnBoot`. **D7 is equally suspect for the same reason** (UART0 RX) —
+not a safe fallback either; see "Optional: mode-select from software"
+below for where this leaves that idea.
+
+**D0/GPIO0 is the switch pin now.** Confirmed genuinely free of any
+fixed peripheral claim, and not a strapping pin on the C6. It does,
+however, share a net with the Wio-SX1262 HAT's onboard button and 10kΩ
+pull-up (`K1`/`R2` — see `WIRING.md`'s "The Wio-SX1262 HAT's onboard
+button shares D0") — worth its own look here, since rx uses this pin
+differently than tx does:
+
+- **The sleep-current problem that motivated tx's whole D0 investigation
+  doesn't apply here at all.** That was about shaving microamps off a
+  battery-powered deep-sleep budget; rx is mains-powered and never
+  sleeps, so a parasitic pull-up current measured in µA is completely
+  lost in its normal milliamp-scale WiFi/radio draw. Nothing to fix on
+  that front.
+- **A different, new concern specific to driving D0 as an output,
+  though**: tx only ever reads D0 as an input; rx now actively drives it
+  (push-pull HIGH or LOW) to switch the MOSFET gate. If someone
+  physically presses the Wio HAT's onboard button while the GPIO is
+  driving the net HIGH, that's a direct short to GND through the
+  button's switch contacts, fighting the GPIO's own output stage — not
+  something to rely on the pin tolerating indefinitely. Mitigation:
+  don't press that button. It's non-functional/decorative in this
+  design regardless (same conclusion `WIRING.md` already reached for
+  tx) — worth a strip of tape over it, or the same pin-snipping
+  treatment `WIRING.md` documents for tx, if this ever moves off a
+  breadboard into something permanent. When the GPIO drives LOW instead,
+  R2's pull-up just adds a trivial ~330µA sink load (3.3V/10kΩ) —
+  nowhere near any GPIO's sink capability, not a concern.
 
 ## Circuit
 
@@ -42,7 +78,7 @@ VBUS (5V) ───────────────────────�
                                               │
                                          beacon GND ── MOSFET drain
                                                          │
-GPIO D6 ──[220Ω]── MOSFET gate                     MOSFET source ── GND
+GPIO D0 ──[220Ω]── MOSFET gate                     MOSFET source ── GND
                        │
                      [10kΩ]
                        │
@@ -131,6 +167,11 @@ run — pattern didn't change):
       in hand — confirmed standard 1x3 2.54mm DuPont-style female
       header. Matching 1x3 male header on the rx side, see the Parts
       table above.
+- [ ] Confirm D0 actually fixes the stuck-on symptom — D6 was tried
+      first, measured a constant ~3V gate voltage regardless of door
+      state (root-caused to UART0's fixed claim on that pin), firmware
+      moved to D0 and reflashed, not yet reconfirmed on the bench. See
+      "Pin: D0 / GPIO0" above for the full story.
 
 ## Optional: mode-select from software
 
@@ -138,14 +179,26 @@ Not needed for the core design (confirmed above — floating gives the
 default rotating pattern already) and not planned for now, but worth
 sketching since it's genuinely easy if ever wanted.
 
-**Wiring**: beacon's signal wire straight to **D7/GPIO17** (the other
-pin this doc set aside), no transistor involved this time — unlike the
-beacon's own +5V/GND, this is just a logic-level signal into what's
-almost certainly a microcontroller input on the beacon's own driver
-board, not something that needs power-level switching. A small series
-resistor (220-470Ω) between the GPIO and the signal wire is cheap
-insurance, same reasoning as the gate resistor elsewhere in this doc,
-but isn't expected to be load-bearing.
+**Pin: not actually settled.** This section originally suggested
+D7/GPIO17 as "the other pin this doc set aside," reasoning that mirrored
+the (wrong) D6 assumption above — D7 is UART0 RX, the same fixed
+peripheral claim that ruled out D6, so it's equally suspect and
+shouldn't be trusted without the same kind of bench confirmation that
+caught D6. With D0 now spoken for by the on/off switch, there isn't an
+obviously-free pin left on the standard 14-pin header for this — would
+need fresh investigation if this is ever actually pursued, not a
+simple "use the next one over" the way this section originally assumed.
+The wiring/signal/firmware shape below is still the right *approach*,
+just pending a real pin to attach it to.
+
+**Wiring** (pin TBD — see above): beacon's signal wire straight to the
+chosen GPIO, no transistor involved this time — unlike the beacon's own
++5V/GND, this is just a logic-level signal into what's almost certainly
+a microcontroller input on the beacon's own driver board, not something
+that needs power-level switching. A small series resistor (220-470Ω)
+between the GPIO and the signal wire is cheap insurance, same reasoning
+as the gate resistor elsewhere in this doc, but isn't expected to be
+load-bearing.
 
 **Signal**: these inputs are standard RC servo/ESC-style PWM — 50Hz
 (20ms period), pulse width somewhere in the 1000-2000µs range selecting
@@ -160,7 +213,7 @@ once configured — no per-loop bit-banging needed, it keeps outputting
 the waveform on its own until told to change:
 
 ```cpp
-#define BEACON_MODE_PIN      7      // D7/GPIO17
+#define BEACON_MODE_PIN      /* TBD — see "Pin: not actually settled" above */
 #define BEACON_PWM_FREQ_HZ   50
 #define BEACON_PWM_BITS      16     // plenty of duty-cycle resolution
 
@@ -183,14 +236,16 @@ void set_beacon_mode_us(uint32_t pulse_us) {
 (`ledcAttach`/`ledcWrite` is the current Arduino-ESP32 core 3.x API —
 older examples online use `ledcSetup`/`ledcAttachPin`, which this core
 no longer has.) This runs entirely independent of the on/off power
-switch on D6 — the PWM signal can stay configured and running
+switch on D0 — the PWM signal can stay configured and running
 regardless of whether the beacon's own power is actually on; it just
 does nothing while unpowered.
 
-## Not yet done: firmware
+## Firmware status
 
-`rx.ino` already tracks held-open state (`door_is_open`,
-`short_open_alerted`, and the `PKT_DOOR_HELD_OPEN` handler) — driving
-the new GPIO would piggyback on that existing logic, not add new state.
-Deliberately left for a follow-up once the hardware above is built and
-confirmed working on the bench.
+Written and flashed (`rx.ino`'s `beacon_should_be_on()`/
+`update_beacon()`, piggybacking on the existing `door_is_open`/
+`short_open_alerted`/`PKT_DOOR_HELD_OPEN` tracking rather than adding
+new state) — see that file's own comments for the structure. Currently
+set to D0 after the D6 lesson above; pending a fresh bench confirmation
+that D0 actually resolves the stuck-on symptom before the "Bench-test
+checklist" section above gets a final checkmark for the pin choice.
