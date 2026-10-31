@@ -1,12 +1,10 @@
 # Receiver held-open beacon (draft)
 
-**Draft/working doc.** Firmware's written and flashed; hardware is
-breadboarded and under active bench debugging — the original D6 pin
-choice turned out not to work (see "Pin: D0 / GPIO0" below) and the
-fix (move to D0) is flashed but not yet reconfirmed on the bench. Once
-that's confirmed and the circuit's buttoned up, fold the relevant parts
-into `WIRING.md` (or split into a standalone `rx` wiring doc — there
-isn't one yet; `WIRING.md` today only covers the transmitter build) and
+**Draft/working doc.** Design, firmware, and pin choice are all now
+confirmed working on the bench (D0 — see "Pin: D0 / GPIO0" below for
+why D6 didn't work and what replaced it). Fold the relevant parts into
+`WIRING.md` (or split into a standalone `rx` wiring doc — there isn't
+one yet; `WIRING.md` today only covers the transmitter build) and
 retire this file.
 
 ## What this adds
@@ -24,23 +22,57 @@ for monitoring after deep sleep), D6/D7 (GPIO16/17) would be genuinely
 unused by rx's firmware. **That assumption was wrong, confirmed on the
 bench**: with the beacon wired to D6, the MOSFET gate measured a
 constant ~3V regardless of door state or anything the firmware wrote to
-the pin. Root cause, confirmed against Espressif/Arduino-ESP32
-documentation: GPIO16/17 are this chip's UART0 TX/RX pins, fixed at the
-hardware level (not reroutable via the GPIO matrix like most
-peripherals), and the Arduino-ESP32 core's USB-CDC build still routes
-debug/console output through UART0 even when `Serial` itself is bound
-to native USB — so something below the application level had an
-independent claim on the pin the whole time, regardless of
-`CDCOnBoot`. **D7 is equally suspect for the same reason** (UART0 RX) —
-not a safe fallback either; see "Optional: mode-select from software"
-below for where this leaves that idea.
+the pin.
 
-**D0/GPIO0 is the switch pin now.** Confirmed genuinely free of any
-fixed peripheral claim, and not a strapping pin on the C6. It does,
-however, share a net with the Wio-SX1262 HAT's onboard button and 10kΩ
-pull-up (`K1`/`R2` — see `WIRING.md`'s "The Wio-SX1262 HAT's onboard
-button shares D0") — worth its own look here, since rx uses this pin
-differently than tx does:
+Root cause, confirmed directly against the installed toolchain's own
+compiled configuration (`~/.arduino15/packages/esp32/tools/esp32c6-libs/3.3.11/sdkconfig`
+on the Linux dev box — the actual sdkconfig this project's `esp32c6`
+builds link against, one shared file regardless of a sketch's
+`CDCOnBoot` setting), not just a web search: `CONFIG_ESP_CONSOLE_UART=y`,
+`CONFIG_ESP_CONSOLE_UART_NUM=0`. ESP-IDF's own internal console/logging
+subsystem — used by the ROM bootloader's boot-time messages and by
+every prebuilt IDF component's own diagnostic output (WiFi, etc.), not
+by the Arduino sketch — is compiled to use UART0 (GPIO16/17) regardless
+of what the sketch's `Serial` object does. **This is a toolchain/library
+configuration choice baked into the prebuilt libraries Arduino-ESP32
+ships for this chip, not a silicon-level limitation** — correcting an
+earlier, less precise claim in this doc that GPIO16/17 were somehow
+hard-wired at the chip level; the real mechanism is one layer up, in
+how this specific SDK build was configured. Arduino's `CDCOnBoot`
+setting only changes which object the sketch's own `Serial` variable
+points at (native USB vs. this same UART0) — it doesn't touch
+`CONFIG_ESP_CONSOLE_UART_NUM`, which is fixed at a lower layer the
+Arduino board-manager menu doesn't expose. See ESP-IDF's
+[Kconfig reference](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/api-reference/kconfig-reference.html)
+for what this setting controls. **D7 is equally suspect for the same
+reason** (UART0 RX) — not a safe fallback either; see "Optional:
+mode-select from software" below for where this leaves that idea.
+
+**D0/GPIO0 is the switch pin now, confirmed working on the bench.**
+Genuinely free of any fixed peripheral claim (confirmed against
+ESP-IDF's own GPIO docs, not just assumed this time), and not a
+strapping pin on the C6. One real debugging detour on the way to that
+confirmation, worth recording since it looked like a hardware problem
+and wasn't: after moving the physical wire from D6 to D0 and reflashing
+from the macOS flashing box, the gate read a steady ~1.6V and the
+beacon never turned on — which happens to match almost exactly what
+passive resistor-divider math alone predicts for an *undriven* D0 (the
+Wio HAT's 10kΩ pull-up fighting this circuit's own 220Ω+10kΩ pulldown,
+with nothing actively driving the node either way). That symptom was
+real, but its cause wasn't a wiring fault — the macOS box hadn't pulled
+the latest commit, so it was still flashing the old D6-targeting
+firmware, which never touched D0 at all, leaving it genuinely
+undriven and floating at that computed divider voltage. Re-pulled and
+reflashed with the actual D0-targeting build, and it worked
+immediately. No hardware fix was needed or made to the D0 circuit
+itself — worth remembering next time a symptom looks electrical, since
+this one very nearly sent debugging down a continuity-check path for a
+connection that was never actually the problem.
+
+It does, however, share a net with the Wio-SX1262 HAT's onboard button
+and 10kΩ pull-up (`K1`/`R2` — see `WIRING.md`'s "The Wio-SX1262 HAT's
+onboard button shares D0") — worth its own look here, since rx uses
+this pin differently than tx does:
 
 - **The sleep-current problem that motivated tx's whole D0 investigation
   doesn't apply here at all.** That was about shaving microamps off a
@@ -167,11 +199,10 @@ run — pattern didn't change):
       in hand — confirmed standard 1x3 2.54mm DuPont-style female
       header. Matching 1x3 male header on the rx side, see the Parts
       table above.
-- [ ] Confirm D0 actually fixes the stuck-on symptom — D6 was tried
-      first, measured a constant ~3V gate voltage regardless of door
-      state (root-caused to UART0's fixed claim on that pin), firmware
-      moved to D0 and reflashed, not yet reconfirmed on the bench. See
-      "Pin: D0 / GPIO0" above for the full story.
+- [x] Confirm D0 actually fixes the stuck-on symptom — confirmed working
+      on the bench (one detour along the way where a stale flashing-box
+      checkout, not a hardware fault, briefly looked like a second pin
+      problem — see "Pin: D0 / GPIO0" above for the full story).
 
 ## Optional: mode-select from software
 
@@ -242,10 +273,8 @@ does nothing while unpowered.
 
 ## Firmware status
 
-Written and flashed (`rx.ino`'s `beacon_should_be_on()`/
-`update_beacon()`, piggybacking on the existing `door_is_open`/
-`short_open_alerted`/`PKT_DOOR_HELD_OPEN` tracking rather than adding
-new state) — see that file's own comments for the structure. Currently
-set to D0 after the D6 lesson above; pending a fresh bench confirmation
-that D0 actually resolves the stuck-on symptom before the "Bench-test
-checklist" section above gets a final checkmark for the pin choice.
+Written, flashed, and confirmed working on D0 (`rx.ino`'s
+`beacon_should_be_on()`/`update_beacon()`, piggybacking on the existing
+`door_is_open`/`short_open_alerted`/`PKT_DOOR_HELD_OPEN` tracking rather
+than adding new state) — see that file's own comments for the
+structure.

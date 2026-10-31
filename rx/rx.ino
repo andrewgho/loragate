@@ -25,13 +25,14 @@
 // door_is_open; see that function's comment for the intended later
 // behavior and why changing it is the only edit needed.
 //
-// D0, not D6: D6/GPIO16 is this chip's UART0 TX pin, fixed at the
-// hardware level (not reroutable via the GPIO matrix like most
-// peripherals). Confirmed on the bench: gate sat at a constant ~3V no
-// matter what this code wrote to it or what the door was doing, because
-// something below the application level still had a claim on that pin.
-// D0/GPIO0 is genuinely free on rx (no reed switch here, so none of
-// tx's D0/Wio-button sharing concerns apply — see RX_BEACON_WIRING.md).
+// D0, not D6: D6/GPIO16 is UART0 TX, and this toolchain's ESP32-C6
+// sdkconfig has ESP-IDF's own console compiled onto UART0 regardless of
+// CDCOnBoot — confirmed against the installed core's own sdkconfig, not
+// just assumed. Gate sat at a constant ~3V no matter what this code
+// wrote to it. D0/GPIO0 is confirmed working — see RX_BEACON_WIRING.md
+// for the full D6 story and what sharing D0 with the Wio HAT's onboard
+// button means here (different concern than tx's D0 usage, since rx
+// drives this pin rather than just reading it).
 #define BEACON_PIN 0  // D0/GPIO0
 
 // Attempts for one HTTP GET (the first try plus this many retries) before
