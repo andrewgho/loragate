@@ -20,6 +20,19 @@ and `git log` for the full detail behind any specific change — commit
 messages here are written to carry that detail rather than relying on
 a separate design doc.
 
+`tx` has moved off the original stacked protoboard onto a custom KiCad
+PCB (`kicad/` — schematic and layout reviewed, fab'd, received, and
+empirically fitted into a real outdoor IP65 enclosure with a revised
+3D-printed mount, `mount/`); `WIRING.md` and README.md still describe
+the original protoboard build and haven't been updated to match yet.
+`rx` is still on its original stacked protoboard for the radio, and is
+gaining a small *second*, standalone protoboard for a held-open warning
+beacon — firmware's done and confirmed working (D0/GPIO0), the new
+protoboard's layout is designed and reviewed but not yet soldered; see
+`RX_BEACON_WIRING.md` — a tracked draft doc, deliberately not yet
+folded into `WIRING.md` until the physical build and firmware's final
+threshold behavior are both actually finished.
+
 ## Sketches
 
 | Path | Role |

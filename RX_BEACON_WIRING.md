@@ -1,11 +1,15 @@
 # Receiver held-open beacon (draft)
 
-**Draft/working doc.** Design, firmware, and pin choice are all now
-confirmed working on the bench (D0 — see "Pin: D0 / GPIO0" below for
-why D6 didn't work and what replaced it). Fold the relevant parts into
-`WIRING.md` (or split into a standalone `rx` wiring doc — there isn't
-one yet; `WIRING.md` today only covers the transmitter build) and
-retire this file.
+**Draft/working doc.** Design, firmware, and pin choice are all
+confirmed working on the breadboard (D0 — see "Pin: D0 / GPIO0" below
+for why D6 didn't work and what replaced it). Currently moving to a
+permanent build: a small standalone protoboard for just this circuit
+(separate from rx's existing stacked radio protoboard) is laid out and
+reviewed but **not yet soldered** — see "Protoboard layout" below,
+including one real wiring bug caught before it got built. Once soldered
+and reconfirmed, fold the relevant parts into `WIRING.md` (or split
+into a standalone `rx` wiring doc — there isn't one yet; `WIRING.md`
+today only covers the transmitter build) and retire this file.
 
 ## What this adds
 
@@ -145,6 +149,50 @@ GPIO D0 ──[220Ω]── MOSFET gate                     MOSFET source ──
 
 No flyback diode — see "Confirmed on the bench" below.
 
+## Protoboard layout (in progress — reviewed, not yet soldered)
+
+Small 1"x1", 9x9-hole board, pads grouped in sets of 3 per row (each
+row splits into three independent 3-hole islands: columns A-C, D-F,
+G-I — no bussing across groups or between rows), with a mounting hole
+knocking out 4 pads (I4, H5, I5, I6).
+
+Current plan: two vertical 1x3 headers in columns A (XIAO side: A1
+VBUS, A2 GND, A3 D0) and I (beacon side: I1 BEACON_PWM — left floating,
+I2 BEACON_5V, I3 BEACON_GND), MOSFET mounted standing on its 3 legs
+down column E rows 2-4 (E2 Source, E3 Drain, E4 Gate — verified by
+working through the physical rotation for "printed face toward column
+I/east," matches twice via independent reasoning, but **still needs a
+physical dry-fit against the datasheet pinout before soldering** — this
+kind of 3D reasoning from text is exactly the kind of thing worth
+distrusting until confirmed with the part in hand), then:
+
+- `C2` (GND island) → `D2` (Source island): direct jumper.
+- `B2` (GND island) → 10kΩ → `D4` (Gate island): pulldown. Landing at
+  D4 rather than F4 keeps the lead's path inside columns B-D, clear of
+  the Drain leg at E3.
+- `B3` (D0 island) → 220Ω → `F4` (Gate island): gate series resistor,
+  approaching from the opposite side of D4's lead — keeps the two
+  gate-side connections naturally separated.
+- `F3` (Drain island) → `H3` (BEACON_GND island): jumper.
+- `B1` (VBUS island) → `H2` (BEACON_5V island): jumper.
+
+Everything fits inside rows 1-4; no need to route around the back via
+row 5 (which is also missing 2 of its 3 right-side holes from the
+mounting-hole knockout, a constraint that would have mattered if a
+detour through there were ever needed).
+
+One real bug caught and fixed during review: an earlier draft of this
+layout had the GND→Source jumper landing on `B3` instead of `C2` — B3
+is actually part of row 3's island, which is the **D0** net here, not
+GND (GND is row 2, D0 is row 3, per the header assignment above). Built
+as originally drafted, that would have wired D0 directly to the
+MOSFET's source with no resistance in between, leaving Source
+disconnected from true GND entirely — not a cosmetic issue, a real
+miswiring that would have kept the switch from working correctly and
+put the GPIO pin at risk of sinking the beacon's switched current
+directly. Caught by tracing each hole against the stated header order
+rather than trusting the layout's own prose labels at face value.
+
 **The header's "GND" position connects to the MOSFET drain, not
 straight to the board's GND rail** — that's the switched node (see the
 Circuit diagram above). Wiring it directly to GND instead would bypass
@@ -203,6 +251,10 @@ run — pattern didn't change):
       on the bench (one detour along the way where a stale flashing-box
       checkout, not a hardware fault, briefly looked like a second pin
       problem — see "Pin: D0 / GPIO0" above for the full story).
+- [ ] Solder the protoboard per "Protoboard layout" above, dry-fitting
+      the MOSFET against the datasheet pinout first, then re-confirm
+      the beacon still switches correctly on the permanent build (not
+      just on the breadboard prototype).
 
 ## Optional: mode-select from software
 
@@ -277,4 +329,8 @@ Written, flashed, and confirmed working on D0 (`rx.ino`'s
 `beacon_should_be_on()`/`update_beacon()`, piggybacking on the existing
 `door_is_open`/`short_open_alerted`/`PKT_DOOR_HELD_OPEN` tracking rather
 than adding new state) — see that file's own comments for the
-structure.
+structure. Still deliberately in its testing-phase behavior (lit for
+the entire time the door's open, per `beacon_should_be_on()`'s current
+`return door_is_open;`), not yet switched to the intended "only after
+the 45s/300s warning" behavior — that's a one-line change whenever
+wanted, per the design note in that function's own comment.
