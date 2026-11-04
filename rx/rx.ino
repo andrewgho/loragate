@@ -9,6 +9,7 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
 #include <SPI.h>
 #include <RadioLib.h>
 #include <esp_system.h>
@@ -81,6 +82,7 @@ volatile bool rx_flag = false;
 void IRAM_ATTR set_rx_flag() { rx_flag = true; }
 
 bool startup_log_sent = false;
+bool mdns_started = false;
 
 // Our own idea of the door state, independent of whatever tx/tx.ino thinks
 // — kept so we can raise the short-open alert without waiting on a packet.
@@ -127,11 +129,18 @@ bool radio_listening = true;
 void wifi_connect() {
   if (WiFi.status() == WL_CONNECTED) return;
   Serial.printf("WiFi: connecting to %s...\n", WIFI_SSID);
+  // Must precede WiFi.begin().
+  WiFi.setHostname(RX_HOSTNAME);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT_MS) delay(200);
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("WiFi: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("WiFi: %s as %s\n", WiFi.localIP().toString().c_str(), RX_HOSTNAME);
+    // Once only: mDNS follows the netif through reconnects on its own.
+    if (!mdns_started) {
+      mdns_started = MDNS.begin(RX_HOSTNAME);
+      Serial.printf("mDNS: %s\n", mdns_started ? RX_HOSTNAME ".local" : "failed to start");
+    }
     if (!startup_log_sent) {
       // Fire-and-forget, right here rather than in setup(), so it fires
       // whichever call happens to be the one that first gets us online —
