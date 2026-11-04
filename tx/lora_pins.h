@@ -10,14 +10,14 @@
 //   D10      MOSI
 //   D9       MISO
 //   D8       SCK
-//   D7       D7    (passthrough, unused)
-//   D0       D0    (passthrough, unused)
+//   D7       D7    (passthrough, not a radio pin)
+//   D0       D0    (passthrough, not a radio pin)
 //   D1       DIO1
 //   D2       RST
 //   D3       BUSY
 //   D4       NSS
 //   D5       RF_SW
-//   D6       D6    (passthrough, unused)
+//   D6       D6    (passthrough, not a radio pin)
 //
 // See README.md's Hardware history for why this came from the
 // silkscreen rather than a schematic.
@@ -29,10 +29,9 @@
 #define LORA_BUSY  21  // D3
 #define LORA_NSS   22  // D4
 #define LORA_RFSW  23  // D5 — RF switch /CTRL; drive HIGH once at boot and
-                       // leave it. DIO2 (not host-controlled) does the
-                       // actual TX/RX switching, but only once enabled via
-                       // radio.setDio2AsRfSwitch(true) in setup() — the
-                       // SX1262 doesn't route DIO2 to the switch by default.
+                       // leave it. DIO2 does the actual TX/RX switching,
+                       // but only once radio.setDio2AsRfSwitch(true)
+                       // enables it at radio init — off by default.
 #define LORA_SCK   19  // D8
 #define LORA_MISO  20  // D9
 #define LORA_MOSI  18  // D10

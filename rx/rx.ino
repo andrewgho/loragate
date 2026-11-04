@@ -1,11 +1,9 @@
 // loragate rx — always-on door-sensor receiver.
 //
-// Listens forever, acks every recognized packet, logs it, and forwards it
-// to the monitoring server (URLs in local.h — see README.md's Software
-// section for the protocol and architecture). http_get() retries a
-// handful of times on a likely-transient failure (see its own comment);
-// a sustained outage still just gets logged and dropped — no persistent
-// queue, so an event lost to a long enough outage is gone for good.
+// Listens forever, acks every recognized packet, and forwards each event
+// to the monitoring server over HTTP (URLs in local.h; protocol and
+// architecture in README.md's Software section). No persistent queue: an
+// event that outlasts http_get()'s retries is logged and dropped.
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -20,25 +18,15 @@
 
 #define WIFI_TIMEOUT_MS 10000
 
-// Held-open warning beacon — GPIO drives a low-side MOSFET switching the
-// beacon's own 5V/GND; see RX_BEACON_WIRING.md for the circuit. Testing
-// phase only: beacon_should_be_on() below currently just mirrors
-// door_is_open; see that function's comment for the intended later
-// behavior and why changing it is the only edit needed.
-//
-// D0, not D6: D6/GPIO16 is UART0 TX, and this toolchain's ESP32-C6
-// sdkconfig has ESP-IDF's own console compiled onto UART0 regardless of
-// CDCOnBoot — confirmed against the installed core's own sdkconfig, not
-// just assumed. Gate sat at a constant ~3V no matter what this code
-// wrote to it. D0/GPIO0 is confirmed working — see RX_BEACON_WIRING.md
-// for the full D6 story and what sharing D0 with the Wio HAT's onboard
-// button means here (different concern than tx's D0 usage, since rx
-// drives this pin rather than just reading it).
+// Held-open warning beacon: drives a low-side MOSFET switching the
+// beacon's 5V (circuit in RX_BEACON_WIRING.md). D0, not D6/D7: those are
+// UART0, which this core's prebuilt ESP-IDF console claims regardless of
+// CDCOnBoot. D0 shares a net with the Wio HAT's onboard button — don't
+// press it while this drives HIGH (see RX_BEACON_WIRING.md).
 #define BEACON_PIN 0  // D0/GPIO0
 
-// Attempts for one HTTP GET (the first try plus this many retries) before
-// giving up on a likely-transient failure — a brief DNS hiccup or the
-// server momentarily restarting, not a sustained outage (see http_get()).
+// Retries (after the first try) for one HTTP GET on a transient failure —
+// see http_get().
 #define HTTP_GET_RETRIES 2
 #define HTTP_GET_RETRY_DELAY_MS 750
 
@@ -46,10 +34,9 @@
 // doesn't come up right away.
 #define RADIO_BEGIN_RETRY_MS 5000UL
 
-// How many consecutive housekeeping-interval startReceive() retries to
-// try before escalating to a full radio_reinit() — a persistently
-// failing startReceive() more likely means the chip itself is wedged
-// than that one more identical call will somehow succeed.
+// Consecutive failed startReceive() retries (one per housekeeping tick)
+// before escalating to a full radio_reinit() — repeated failure suggests
+// the chip itself is wedged.
 #define STARTRECEIVE_REINIT_AFTER_FAILURES 3
 
 // How often loop() runs its periodic (not packet-triggered) checks —
@@ -90,15 +77,11 @@ bool door_is_open = false;
 uint32_t door_opened_at_ms = 0;  // meaningful only while door_is_open
 bool short_open_alerted = false; // true once we've reported this open episode
 
-// Whether the held-open beacon should currently be lit. Testing phase:
-// on for the entire time the door's open. The intended later behavior —
-// lit only once the 45s short-open or 300s tx-confirmed held-open
-// warning has actually fired, not immediately on open (e.g.
-// `return short_open_alerted;`) — only needs this one function changed:
-// every call site re-evaluates through it (see update_beacon()) rather
-// than setting the pin directly, and update_beacon() is already called
-// once per run_housekeeping() tick, which is where short_open_alerted
-// itself gets set.
+// Testing phase: lit whenever the door's open. Intended final behavior is
+// lit only once a held-open alert has fired (e.g. `return
+// short_open_alerted;`); changing just this function is enough, since the
+// pin is only ever set via update_beacon(), which runs every housekeeping
+// tick.
 bool beacon_should_be_on() {
   return door_is_open;
 }
@@ -107,17 +90,13 @@ void update_beacon() {
   digitalWrite(BEACON_PIN, beacon_should_be_on() ? HIGH : LOW);
 }
 
-// Staleness tracking — last_rx_ms starts at the end of setup() (not
-// "whenever the first packet arrives"), so silence from boot onward
+// Staleness clock — set at the end of setup(), so silence from boot
 // counts too, not just silence after first contact.
 uint32_t last_rx_ms;
 bool stale_alerted = false;      // true once we've reported this silence
 
-// Dedup for handle_packet(): see seq_dedup.h. Not RTC-persisted — rx is
-// mains-powered and never restarts on its own, so losing this across an
-// actual rx reboot (re-processing whatever tx happens to retry next) is
-// an acceptable, rare edge case, not worth the complexity RTC persistence
-// would add here.
+// Dedup for handle_packet() (see seq_dedup.h). Not RTC-persisted: rx
+// rarely reboots, and losing it costs at most reprocessing one retry.
 bool have_last_seq = false;
 uint32_t last_seq = 0;
 
@@ -142,12 +121,9 @@ void wifi_connect() {
       Serial.printf("mDNS: %s\n", mdns_started ? RX_HOSTNAME ".local" : "failed to start");
     }
     if (!startup_log_sent) {
-      // Fire-and-forget, right here rather than in setup(), so it fires
-      // whichever call happens to be the one that first gets us online —
-      // the explicit connect in setup(), or a later lazy reconnect from
-      // http_get(). http_get() calls wifi_connect() too; by the time it
-      // does, WiFi is already up and this block won't run again, so
-      // there's no recursion loop.
+      // Here rather than in setup(), so it fires on whichever call first
+      // gets us online (setup()'s, or a lazy one from http_get()). No
+      // recursion: WiFi is already up when http_get() calls back in.
       startup_log_sent = true;
       http_get(STARTUP_LOG_URL);
     }
@@ -159,19 +135,15 @@ void wifi_connect() {
 // Periodic checks that don't wait on a radio packet — called every loop()
 // iteration, throttled to HOUSEKEEPING_INTERVAL_MS internally.
 void run_housekeeping() {
-  // wifi_connect() already no-ops when already connected; this is what
-  // notices a drop and starts retrying even with no packet or outgoing
-  // request around to trigger the lazy reconnect in http_get().
+  // Notices a drop even with no request around to trigger http_get()'s
+  // lazy reconnect.
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi: disconnected; attempting reconnect");
     wifi_connect();
   }
 
-  // Nothing else will retry this on its own: once startReceive() has
-  // failed, no IRQ ever fires to re-enter handle_packet() and try again,
-  // so this tick is the only thing that can notice and recover. A few
-  // plain retries first (cheap); escalate to a full radio_reinit() only
-  // if those don't work.
+  // Once startReceive() has failed no IRQ fires again, so this is the
+  // only recovery path: a few plain retries, then a full radio_reinit().
   if (!radio_listening) {
     static uint8_t consecutive_failures = 0;
     ensure_receiving();
@@ -190,10 +162,8 @@ void run_housekeeping() {
     report_door_open_past(SHORT_OPEN_THRESHOLD_SECONDS, nullptr);
   }
 
-  // Backstop, not just the handle_packet() call sites: re-evaluates
-  // every tick regardless of what changed, so it can't drift out of
-  // sync with door_is_open/short_open_alerted no matter how they got
-  // there.
+  // Backstop for the handle_packet() call sites: re-evaluated every tick
+  // so the pin can't drift out of sync with the door state.
   update_beacon();
 
   uint32_t silence_s = (millis() - last_rx_ms) / 1000UL;
@@ -205,16 +175,10 @@ void run_housekeeping() {
   }
 }
 
-// Performs an HTTP GET against `base_url`, retrying up to HTTP_GET_RETRIES
-// times on a response that looks transient: a negative code is
-// HTTPClient's own connection-level failure (timeout, refused, DNS, ...),
-// and 5xx is the server itself erroring — both are worth another attempt.
-// A 4xx means the request itself is wrong (a bad URL), where retrying
-// can't help, so that's left alone. Reconnects WiFi first (once, not
-// per-attempt) if needed; if that fails, logs it and gives up without
-// trying the HTTP GET at all. Unlike tx's radio-level ack/retry, there's
-// no persistent queue behind this — give up after the last attempt and
-// the event is gone for good, logged but never retried again.
+// HTTP GET, retried up to HTTP_GET_RETRIES times on a transient failure:
+// a negative code (HTTPClient connection error — timeout, refused, DNS)
+// or 5xx. A 4xx means a bad URL, so no retry. Connects WiFi first if
+// needed, and skips the request if that fails.
 void http_get(const char *base_url) {
   wifi_connect();
   if (WiFi.status() != WL_CONNECTED) {
@@ -296,13 +260,10 @@ void report_rx_condition(const char *url_template, const char *message) {
 // claimed it should have. Must match RTC_DATA_LOSS_INFO in tx/tx.ino.
 #define RTC_DATA_LOSS_INFO 255
 
-// Maps a PKT_DIAGNOSTIC packet's `info` byte (an esp_reset_reason_t cast to
-// uint8_t, or RTC_DATA_LOSS_INFO — see tx/tx.ino) to a short name for the
-// log URL's path component. Falls back to "unknown" for anything not
-// listed here rather than failing — the raw numeric code is also sent
-// separately (see DIAGNOSTIC_URL_TEMPLATE's code= param) so a future
-// reset reason this table doesn't know about yet is still visible, just
-// not named.
+// Maps a PKT_DIAGNOSTIC packet's `info` byte (an esp_reset_reason_t, or
+// RTC_DATA_LOSS_INFO) to a short name for the log URL. Unlisted codes map
+// to "unknown"; the raw code is sent too (DIAGNOSTIC_URL_TEMPLATE's
+// code=), so they're still visible.
 const char *reset_reason_name(uint8_t code) {
   if (code == RTC_DATA_LOSS_INFO) return "rtc_data_loss";
   switch ((esp_reset_reason_t)code) {
@@ -320,13 +281,11 @@ const char *reset_reason_name(uint8_t code) {
   }
 }
 
-// Calls radio.begin() with the project's fixed parameters, retrying every
-// RADIO_BEGIN_RETRY_MS until it succeeds — rx is mains-powered and meant
-// to run unattended indefinitely, so retrying beats halting (a transient
-// fault like power-on before the radio rail settles self-heals without
-// anyone physically power-cycling the unit). Reports ERROR_URL_TEMPLATE
-// once on the first failure and RECOVERY_URL_TEMPLATE once if it had
-// failed at all before finally succeeding — never on every retry attempt.
+// radio.begin() with the project's fixed parameters, retried every
+// RADIO_BEGIN_RETRY_MS until it succeeds — rx runs unattended, so a
+// transient fault (e.g. the radio rail not yet settled at power-on)
+// should self-heal rather than halt. Reports one error on the first
+// failure and one recovery on eventual success, not one per retry.
 void radio_begin_with_retry() {
   int state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ,
                            LORA_SPREADING_FACTOR, LORA_CODING_RATE,
@@ -353,13 +312,9 @@ void radio_begin_with_retry() {
   Serial.println("radio init OK");
 }
 
-// Single attempt at (re)starting receive — reports ERROR_URL_TEMPLATE /
-// RECOVERY_URL_TEMPLATE only on a state transition (radio_listening
-// flipping), not on every call, so this is safe to call as often as
-// needed (every packet handled, every housekeeping tick while down)
-// without spamming the server. Doesn't retry on its own: once
-// startReceive() has failed, no IRQ fires to get back in here on its
-// own, so retrying is run_housekeeping()'s job, not this function's.
+// One attempt at (re)starting receive. Reports error/recovery only when
+// radio_listening flips, so it's safe to call as often as needed.
+// Retrying is run_housekeeping()'s job.
 void ensure_receiving() {
   int state = radio.startReceive();
   if (state == RADIOLIB_ERR_NONE) {
@@ -378,19 +333,14 @@ void ensure_receiving() {
   }
 }
 
-// Full radio bring-up: radio.begin() (via radio_begin_with_retry(), which
-// retries forever and reports on its own), then re-arms DIO2-as-RF-switch
-// and the DIO1 receive-done callback — both get reset by begin() itself,
-// so a reinit after boot needs to redo them too, not just a fresh sketch
-// — then starts receiving. Used both by setup() and by run_housekeeping()
-// when plain startReceive() retries aren't enough to recover.
+// Full radio bring-up, used by setup() and by run_housekeeping() when
+// plain startReceive() retries aren't enough. begin() resets
+// DIO2-as-RF-switch and the DIO1 callback, so both are re-armed here.
 void radio_reinit() {
   radio_begin_with_retry();
 
-  // The antenna switch is steered by DIO2, but the SX1262 doesn't route
-  // DIO2 to the switch automatically out of reset — without this call,
-  // transmit()/startReceive() report success but the switch never moves,
-  // so nothing actually gets to the antenna.
+  // Without this the antenna switch never moves: transmit() and
+  // startReceive() report success but nothing reaches the antenna.
   int state = radio.setDio2AsRfSwitch(true);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("setDio2AsRfSwitch failed: %d\n", state);
@@ -416,11 +366,9 @@ void setup() {
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
   radio_reinit();
 
-  // Deliberately after radio_reinit(), not before: that way the radio is
-  // already listening before this blocks for up to WIFI_TIMEOUT_MS, so a
-  // tx transmission arriving during a slow WiFi connect at boot isn't
-  // missed. report_rx_condition() calls above don't depend on this having
-  // run yet either — http_get() connects WiFi lazily on its own.
+  // After radio_reinit(), so the radio is already listening while this
+  // blocks for up to WIFI_TIMEOUT_MS. (Any report_rx_condition() above
+  // connects lazily via http_get().)
   wifi_connect();
 
   last_rx_ms = millis();  // staleness clock starts now, not on first packet
@@ -428,13 +376,9 @@ void setup() {
 }
 
 void handle_packet() {
-  // Reached whenever the radio's IRQ fires, whether or not it decodes
-  // below — that's weak evidence at best (a CRC-failed reception could be
-  // ambient RF noise, not our tx — confirmed live, see README.md's
-  // Software history), so only the silence *clock* resets unconditionally
-  // here. The one-shot alert *latch* (stale_alerted) only clears once a
-  // packet decodes as a known type, below — otherwise noise after a real
-  // outage could suppress every alert while the transmitter stays dead.
+  // Any IRQ resets the silence clock, but only a packet that decodes as a
+  // known type re-arms stale_alerted (below): a CRC failure may just be
+  // RF noise, which mustn't suppress the alert while tx is dead.
   last_rx_ms = millis();
 
   LoraPacket pkt;
@@ -453,8 +397,7 @@ void handle_packet() {
     return;
   }
 
-  // A recognized type, even a duplicate retry (still real evidence tx is
-  // alive) — safe to re-arm the alert latch now.
+  // Even a duplicate retry is real evidence tx is alive.
   stale_alerted = false;
 
   // Ack every recognized packet so the transmitter stops retrying, before
@@ -469,12 +412,9 @@ void handle_packet() {
   float rssi = radio.getRSSI();
   float snr = radio.getSNR();
 
-  // A retry whose *ack* got lost — even though we did receive and ack the
-  // original — resends the same seq with a different txno. We've already
-  // re-acked it above (needed, so tx stops retrying); re-running the rest
-  // below a second time would double-notify the server, and for
-  // PKT_DOOR_OPEN specifically would also wrongly restart
-  // door_opened_at_ms as if the open event had just happened again.
+  // An ack-loss retry resends the same seq. It's re-acked above (so tx
+  // stops retrying) but not reprocessed: that would double-notify the
+  // server and, for PKT_DOOR_OPEN, restart door_opened_at_ms.
   if (is_duplicate_seq(have_last_seq, last_seq, pkt.seq)) {
     LOG("duplicate seq=%lu txno=%u type=%d; already processed, ack only",
         (unsigned long)pkt.seq, pkt.txno, pkt.type);

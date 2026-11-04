@@ -211,8 +211,11 @@ Always on, always listening:
   sequence number before acting on it, since an ack-loss retry resends
   the same event.
 - Forwards door open/close/heartbeat/held-open/diagnostic events to a
-  monitoring server over HTTP — URLs and WiFi credentials live in
-  `rx/local.h` (gitignored; copy `rx/local.h.example`).
+  monitoring server over HTTP (URLs and WiFi credentials in
+  `rx/local.h` — see "Build, test, and flash").
+- Joins WiFi under `RX_HOSTNAME` (DHCP hostname, so the router shows it
+  and serves local DNS for it) and advertises it over mDNS as
+  `<name>.local`.
 - Runs its own lightweight checks independent of what the transmitter
   decides to send: a faster local "door open past 45s" alert, a
   "haven't heard from the transmitter in a while" staleness alert, and
