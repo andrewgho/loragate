@@ -133,12 +133,13 @@ it's not measured.
 
 ## Hardware
 
-Both nodes use the same radio hardware — a Seeed XIAO ESP32-C6 stacked
+Both nodes use the same radio hardware — a Seeed XIAO ESP32-C6 paired
 with a Seeed Wio-SX1262 (the "for XIAO ESP32S3" through-hole-header
 variant; Seeed doesn't sell this exact pairing, so the pinout is
 confirmed against the physical boards, not a datasheet — see
-WIRING.md's "Shared radio stack"). What differs is what's attached and
-how each is powered.
+WIRING.md's "Shared radio stack"), each with the small ribbon antenna
+that ships with the Wio-SX1262. What differs is what's attached, how
+each is powered, and what the modules mount on.
 
 This section covers what the pieces are and why; **WIRING.md has the
 full pin tables, part numbers/links, and physical build/wiring
@@ -148,18 +149,24 @@ doc to open to actually order parts or wire up a unit.
 ### Transmitter
 
 Reed switch on `D0` (the only free deep-sleep-wake-capable pin), 3x AA
-lithium pack through an LDO and a PTC fuse, in an outdoor enclosure
-with an external antenna. No USB power in the field. Originally built
-on a protoboard (what WIRING.md describes), since moved to a custom
-KiCad PCB (`kicad/`). A 3D-printable mount is in `mount/`.
+lithium pack through an LDO and a PTC fuse, on a custom KiCad PCB
+(`kicad/`) in an IP65 enclosure with the antenna inside. No USB power
+in the field. The PCB doesn't stack the modules as a HAT: it seats them
+side by side, with the Wio flipped on its back for easier routing. That
+lets it leave the Wio's `D0` unconnected, which isolates the reed
+switch from the HAT's onboard button without modifying either module.
+A UART header on D6/D7 takes an FTDI adapter for production-build
+serial monitoring. A 3D-printed mount (`mount/`) holds the PCB and
+battery holder in the enclosure. (The original Perma-Proto protoboard
+build is still documented in WIRING.md.)
 
 ### Receiver
 
 USB-powered, indoors, no battery or enclosure concerns — it just needs
-to stay on and stay on WiFi. One peripheral: a small 5V LED rotating
-beacon, lit while the gate is held open, switched from `D0` by a
-low-side logic-level MOSFET on its own small protoboard (laid out, not
-yet soldered; the circuit is confirmed on a breadboard).
+to stay on and stay on WiFi. The usual XIAO + Wio HAT stack plugs into
+a 1"x1" protoboard wired as a dual 7-pin socket, which also carries
+the one peripheral: a small 5V LED rotating beacon, lit while the gate
+is held open, switched from `D0` by a low-side logic-level MOSFET.
 
 ### History
 
@@ -176,7 +183,15 @@ yet soldered; the circuit is confirmed on a breadboard).
 - The Wio-SX1262 HAT's own onboard button turned out to share the
   reed switch's `D0` net (see "Power budget" → "History" above) — a
   hardware quirk of the stacked-header build, not something visible
-  from either board's datasheet alone.
+  from either board's datasheet alone. The protoboard build fixed it by
+  snipping `D0` out of the stack; the PCB avoids it by design.
+- The battery disconnect moved from JST-PH 2.0mm to Molex KK-254-style
+  (2.54mm, generic KF2510 kit parts): JST-PH crimp pins aren't
+  practical to crimp at home, and KK-254-style ones are.
+- Long-range SMA antennas (with U.FL-to-bulkhead pigtails) were bought
+  for both nodes. The Wio-SX1262's stock ribbon antenna turned out to
+  give enough range, so both nodes use that: it fits inside the
+  enclosure and takes up little room.
 - The receiver's beacon was first wired to `D6`, reasoning that rx's
   `Serial` runs over native USB so UART0's pins were free. The gate sat
   at ~3V whatever the firmware wrote. Root cause, confirmed against the
@@ -192,11 +207,14 @@ yet soldered; the circuit is confirmed on a breadboard).
   checkout, still flashing the `D6` build. A pull and reflash fixed it,
   with no hardware change. Check `git pull` before chasing an
   electrical-looking symptom.
-- The beacon protoboard layout's first draft landed the GND→Source
-  jumper on `B3` (the `D0` island) instead of `C2`. That would have tied
-  `D0` straight to the MOSFET source and left Source off true GND. It
-  was caught in review, before soldering, by tracing each hole against
-  the header assignment rather than trusting the layout's prose labels.
+- The beacon was first planned on a separate standalone protoboard,
+  wired to the stack through a pair of 1x3 headers. That layout's first
+  draft landed the GND→Source jumper on the `D0` island instead of a
+  GND one, which would have tied `D0` straight to the MOSFET source.
+  It was caught in review, before soldering, by tracing each hole
+  against the header assignment rather than trusting the layout's
+  prose labels. The as-built board instead puts the circuit on the
+  protoboard that sockets the stack, with a 2-pin output header.
 - The beacon circuit's flyback diode was dropped after a PPK2
   measurement showed the beacon is LED-only, not motor-driven.
 

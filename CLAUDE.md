@@ -24,16 +24,14 @@ README.md's Hardware/Software sections and `WIRING.md` each have
 parallel Transmitter and Receiver sections (`WIRING.md` also has a
 "Shared radio stack" section for what's common to both).
 
-`tx` has moved off the original stacked protoboard onto a custom KiCad
-PCB (`kicad/` — schematic and layout reviewed, fab'd, received, and
-empirically fitted into a real outdoor IP65 enclosure with a revised
-3D-printed mount, `mount/`); `WIRING.md`'s Transmitter section still
-describes the original protoboard build and hasn't been updated to
-match yet. `rx` is still on its original stacked protoboard for the
-radio, plus a held-open warning beacon on D0 — firmware done and
-confirmed working (still in its testing-phase "lit whenever open"
-behavior), its small standalone protoboard laid out and reviewed but
-not yet soldered (`WIRING.md`'s Receiver section).
+`tx` is on a custom KiCad PCB (`kicad/`) in an outdoor IP65 enclosure
+with a 3D-printed mount (`mount/`); `WIRING.md` documents it as the
+current build, keeping the original protoboard build alongside. `rx`
+is the XIAO + Wio HAT stack on a 1"x1" protoboard socket that also
+carries the held-open beacon circuit (D0); beacon firmware is still
+in its testing-phase "lit whenever open" behavior. Both nodes use the
+Wio-SX1262's stock ribbon antenna. Photos and schematic/PCB exports
+are in `images/`, inlined in `WIRING.md`.
 
 ## Sketches
 
