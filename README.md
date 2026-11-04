@@ -21,7 +21,7 @@ them to a WiFi-connected monitoring server.
   reed switch, 3x AA lithium cells. Deep-sleeps between events.
 - **`rx/`** — the indoor receiver: same radio hardware, USB-powered,
   always on, WiFi-connected. Acks `tx`, forwards events to a
-  monitoring server over HTTP.
+  monitoring server over HTTP, and lights a local held-open beacon.
 - **`test/`** — host-side tests (no ESP32 toolchain needed) for the
   parts of `tx`/`rx` written to be testable without hardware: the wire
   format, `tx`'s wake-decision logic, and `rx`'s retry-dedup logic.
@@ -55,7 +55,7 @@ XIAO's `3V3` pin is wired straight to the chip's core supply with no
 protection, and a fresh pack can sit close to the chip's own voltage
 ceiling with no margin — an LDO (plus a PTC fuse ahead of it) fixes
 both the regulation and the short-circuit exposure in one part. See
-WIRING.md's "Power" for the specific part and the alternative
+WIRING.md's Transmitter "Power" for the specific part and the alternative
 considered.
 
 **Simple ack/retry over the radio link, not a heavier protocol.** Each
@@ -111,7 +111,7 @@ it's not measured.
   got real things wrong: a reed-switch pin that collided with the
   radio's own NSS pin, and a direct battery-to-`3V3` connection with no
   margin against the chip's voltage ceiling. Both forced real design
-  changes — see WIRING.md's pin table and LDO section.
+  changes — see WIRING.md's Transmitter pin table and LDO section.
 - The transmit-current figure was off by more than 3x for a while
   (~35mA assumed vs. ~120-125mA actual) until it was checked against
   the SX1262 and Wio-SX1262 module datasheets directly.
@@ -137,21 +137,29 @@ Both nodes use the same radio hardware — a Seeed XIAO ESP32-C6 stacked
 with a Seeed Wio-SX1262 (the "for XIAO ESP32S3" through-hole-header
 variant; Seeed doesn't sell this exact pairing, so the pinout is
 confirmed against the physical boards, not a datasheet — see
-WIRING.md). What differs is what's attached and how each is powered:
-
-- **Transmitter**: reed switch, 3x AA lithium pack through an LDO and
-  a PTC fuse, in an IP67 enclosure with an external antenna. No USB
-  power in the field.
-- **Receiver**: USB-powered, indoors, no battery or enclosure
-  concerns — it just needs to stay on and stay on WiFi.
-
-A 3D-printable mount for the stacked boards is in `mount/`
-(`mount.scad`/`mount.stl`).
+WIRING.md's "Shared radio stack"). What differs is what's attached and
+how each is powered.
 
 This section covers what the pieces are and why; **WIRING.md has the
 full pin tables, part numbers/links, and physical build/wiring
-instructions** — that's the doc to open to actually order parts or
-wire up a unit.
+instructions**, in matching Transmitter/Receiver sections — that's the
+doc to open to actually order parts or wire up a unit.
+
+### Transmitter
+
+Reed switch on `D0` (the only free deep-sleep-wake-capable pin), 3x AA
+lithium pack through an LDO and a PTC fuse, in an outdoor enclosure
+with an external antenna. No USB power in the field. Originally built
+on a protoboard (what WIRING.md describes), since moved to a custom
+KiCad PCB (`kicad/`). A 3D-printable mount is in `mount/`.
+
+### Receiver
+
+USB-powered, indoors, no battery or enclosure concerns — it just needs
+to stay on and stay on WiFi. One peripheral: a small 5V LED rotating
+beacon, lit while the gate is held open, switched from `D0` by a
+low-side logic-level MOSFET on its own small protoboard (laid out, not
+yet soldered; the circuit is confirmed on a breadboard).
 
 ### History
 
@@ -169,6 +177,28 @@ wire up a unit.
   reed switch's `D0` net (see "Power budget" → "History" above) — a
   hardware quirk of the stacked-header build, not something visible
   from either board's datasheet alone.
+- The receiver's beacon was first wired to `D6`, reasoning that rx's
+  `Serial` runs over native USB so UART0's pins were free. The gate sat
+  at ~3V whatever the firmware wrote. Root cause, confirmed against the
+  installed core's sdkconfig rather than a web search: the prebuilt
+  ESP-IDF has its console on UART0 regardless of `CDCOnBoot` (an SDK
+  configuration choice, not a silicon limit, as an earlier draft
+  wrongly claimed). Moved to `D0`. `D7` is ruled out for the same
+  reason.
+- After the move to `D0`, the gate read a steady ~1.6V and the beacon
+  stayed off. That's almost exactly the divider voltage for an
+  *undriven* `D0` (the HAT's 10kΩ pull-up against the beacon's
+  220Ω+10kΩ pulldown). The cause was the macOS flashing box's stale
+  checkout, still flashing the `D6` build. A pull and reflash fixed it,
+  with no hardware change. Check `git pull` before chasing an
+  electrical-looking symptom.
+- The beacon protoboard layout's first draft landed the GND→Source
+  jumper on `B3` (the `D0` island) instead of `C2`. That would have tied
+  `D0` straight to the MOSFET source and left Source off true GND. It
+  was caught in review, before soldering, by tracing each hole against
+  the header assignment rather than trusting the layout's prose labels.
+- The beacon circuit's flyback diode was dropped after a PPK2
+  measurement showed the beacon is LED-only, not motor-driven.
 
 ## Software
 
@@ -216,6 +246,10 @@ Always on, always listening:
 - Joins WiFi under `RX_HOSTNAME` (DHCP hostname, so the router shows it
   and serves local DNS for it) and advertises it over mDNS as
   `<name>.local`.
+- Drives the held-open beacon through `beacon_should_be_on()`. For now
+  it's lit whenever the door's open (testing phase); the intended final
+  behavior, lit only after a held-open alert fires, is a one-line
+  change there.
 - Runs its own lightweight checks independent of what the transmitter
   decides to send: a faster local "door open past 45s" alert, a
   "haven't heard from the transmitter in a while" staleness alert, and

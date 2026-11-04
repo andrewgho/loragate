@@ -1,15 +1,64 @@
-# Transmitter wiring
+# Wiring
 
-Physical build reference for the outdoor transmitter: XIAO ESP32-C6 +
-Wio-SX1262 stack, magnetic reed switch, 3x AA lithium primary cells
-through a nanopower LDO, optional DS3231 RTC. Built and field-tested —
-this is the as-built reference. See README.md for the project-level
-"why" behind these choices and their history; this doc is the
-part-numbers-and-pinout reference for ordering and building one.
+Physical build reference for both nodes: part numbers, pinouts, and
+wiring for ordering and building one. See README.md for the
+project-level "why" behind these choices and their history.
 
-## Pin table
+Both nodes are the same XIAO ESP32-C6 + Wio-SX1262 radio stack
+("Shared radio stack" below); what differs is what's attached and how
+each is powered.
 
-All 14 XIAO header pins, one source of truth:
+- **Transmitter** — outdoor, battery-powered: magnetic reed switch,
+  3x AA lithium primary cells through an LDO, optional add-ons on
+  I2C.
+- **Receiver** — indoor, USB-powered, always on: a held-open warning
+  beacon switched by a MOSFET.
+
+## Shared radio stack
+
+The Wio-SX1262 (the "for XIAO ESP32S3" through-hole-header variant)
+stacks on the XIAO ESP32-C6 and fixes these pins on both nodes. The
+pinout was read from the boards' silkscreen; see `lora_pins.h`:
+
+| XIAO pin | GPIO | Radio signal |
+|---|---|---|
+| D1 | GPIO1 | DIO1 |
+| D2 | GPIO2 | RST |
+| D3 | GPIO21 | BUSY |
+| D4 | GPIO22 | NSS |
+| D5 | GPIO23 | RF_SW |
+| D8 | GPIO19 | SCK |
+| D9 | GPIO20 | MISO |
+| D10 | GPIO18 | MOSI |
+
+That leaves three header GPIOs, each with a catch:
+
+- **D0 (GPIO0)** — the only free RTC-domain pin (deep-sleep wake
+  capable), and not a C6 strapping pin. **The Wio HAT's own onboard
+  user button (`K1`) and its 10kΩ pull-up (`R2`) are wired to this
+  same `D0` net** — confirmed from Seeed's KiCad schematic, present as
+  shipped. The button is unused in this project. Each node deals with
+  it differently: tx bypasses the HAT on D0, and rx just leaves the
+  button alone.
+- **D6/D7 (GPIO16/17)** — UART0 TX/RX. The installed core's prebuilt
+  ESP-IDF has its console on UART0 (`CONFIG_ESP_CONSOLE_UART_NUM=0` in
+  `~/.arduino15/packages/esp32/tools/esp32c6-libs/3.3.11/sdkconfig`),
+  regardless of a sketch's `CDCOnBoot` setting, and the Arduino board
+  menu doesn't expose it. Confirmed unusable as a plain GPIO output on
+  rx: the pin sat at ~3V whatever the firmware wrote. Not RTC-capable
+  either.
+
+## Transmitter
+
+Outdoor node: magnetic reed switch, 3x AA lithium primary cells
+through a nanopower LDO, optional add-ons. Built and field-tested.
+**This section describes the original protoboard build.** tx has since
+moved to a custom KiCad PCB (`kicad/`) in an IP65 enclosure, which
+isn't documented here yet.
+
+### Pin table
+
+All 14 XIAO header pins, one source of truth for tx:
 
 | XIAO pin | GPIO | Use |
 |---|---|---|
@@ -28,11 +77,11 @@ All 14 XIAO header pins, one source of truth:
 | GND | — | battery − / reed switch return / RTC GND |
 | VBUS/5V | — | unused (no USB power in the field) |
 
-D1-D5 and D8-D10 are fixed by the Wio-SX1262 stack (confirmed by
-reading the boards' silkscreen — see `tx/lora_pins.h`), leaving D0,
-D6, D7 free.
+D1-D5 and D8-D10 are the radio (see "Shared radio stack" above). The
+D6/D7 I2C assignment is a plan only, and those pins are UART0 — see
+"Future additions" for the caveat.
 
-## Mounting the stack
+### Mounting the stack
 
 The XIAO ESP32-C6 + Wio-SX1262 stack mounts on an
 [Adafruit Perma-Proto Quarter-sized breadboard PCB](https://www.digikey.com/en/products/detail/adafruit-industries-llc/1608/5154676)
@@ -43,27 +92,30 @@ protoboard as a socket, with the Wio module (male pins facing down)
 plugging into it. 13 of the 14 XIAO signals (D1-D10, 3V3, GND, VBUS)
 land as ordinary through-hole solder points on the protoboard's
 underside. **D0 is the one exception** — it's bypassed around the
-stack entirely rather than landing here normally; see "The
-Wio-SX1262 HAT's onboard button shares D0" below for why.
+stack entirely rather than landing here normally; see "Bypassing
+the HAT on D0" below for why.
 
 A 3D-printable mount for the assembled stack is in
 `mount/mount.scad`/`mount.stl`.
 
-### Why the reed switch is on D0, not an arbitrary free pin
+### Reed switch
+
+#### Why D0, not an arbitrary free pin
 
 Waking from deep sleep on a GPIO edge requires an RTC-domain pin —
 on the ESP32-C6, that's GPIO0-7 only. Of the three free header pins,
 D0 (GPIO0) is the only one in that range; D6/D7 (GPIO16/17) aren't
 RTC-capable, so they're only useful for something read while already
-awake (like an RTC's I2C bus). It's not a free choice — it's the only
+awake (like an RTC's I2C bus) — and they're UART0 besides (see "Shared
+radio stack"). It's not a free choice — it's the only
 option left once the radio has claimed D1/D2, the other two
 RTC-capable pins.
 
 GPIO0 is not a strapping/boot-select pin on the C6 (unlike classic
-ESP32), so there's no boot hazard here — but see the next section for
-a different hazard this pin choice runs into.
+ESP32), so there's no boot hazard here — but see "Bypassing the HAT on
+D0" below for a different hazard this pin choice runs into.
 
-### Reed switch circuit
+#### Reed switch circuit
 
 Standard alarm-style reed switch: contacts closed (continuity) when
 the magnet is present (gate closed), open when it moves away (gate
@@ -78,13 +130,12 @@ leaks ~3.3µA regardless of code path and can't regress. If the real
 installation turns out electrically noisy (long cable run, near AC
 wiring), drop to 100kΩ.
 
-### The Wio-SX1262 HAT's onboard button shares D0 — bypass required
+#### Bypassing the HAT on D0 — required
 
-The Wio-SX1262 HAT has its own onboard user button (unused by this
-project) with a 10kΩ pull-up wired to the *same* `D0` net the reed
-switch uses — confirmed from Seeed's own KiCad schematic, present on
-the board as shipped. With the door closed, current flows through the
-parallel combination of that 10kΩ and the external 1MΩ pull-up
+The HAT's onboard button and 10kΩ pull-up sit on the reed switch's
+`D0` net (see "Shared radio stack" above). With the door closed,
+current flows through the parallel combination of that 10kΩ and the
+external 1MΩ pull-up
 (`3.3V / (1MΩ ∥ 10kΩ) ≈ 333µA` — matched a live measurement of ~318µA
 closely; see README.md's power-budget History for the full
 investigation).
@@ -105,20 +156,21 @@ isolated and harmless, since this project never uses that button.
 Confirmed on the actual hardware with test jumper cables before
 cutting anything: **21.9µA (door closed) / 18.5µA (door open)** with
 the bypass, vs. the faulty ~318µA/closed-door signature with `D0`
-wired through the HAT normally.
+wired through the HAT normally. (rx doesn't need this bypass — see
+"Receiver" → "Mounting the stack".)
 
 A future PCB revision (planned) would put the XIAO and the Wio-SX1262
 module in separate sockets rather than stacking them, sidestepping
 this HAT-sharing issue entirely — this bypass is a fix for the current
 stacked-HAT build specifically.
 
-## Power
+### Power
 
 **3x AA Energizer Ultimate Lithium (L91) cells in series, through an
 LDO, into the XIAO's 3V3/GND header pins** — not the board's dedicated
 BAT solder pads, and not a direct battery connection.
 
-### Why primary lithium, not rechargeable Li-ion/LiPo
+#### Why primary lithium, not rechargeable Li-ion/LiPo
 
 The XIAO's onboard charge circuit (the BAT pads, below) makes
 rechargeable Li-ion/LiPo the path of least resistance on this board,
@@ -131,7 +183,7 @@ thermal runaway) get worse with age. Primary cylindrical cells carry
 none of those failure modes — matching the alarm industry's own
 convention of primary lithium for door/window sensors.
 
-### Why not a direct battery connection
+#### Why not a direct battery connection
 
 The XIAO's exposed **3V3 header pin is wired directly to the
 ESP32-C6's VDD** — confirmed on a Seeed forum thread about this pin —
@@ -143,7 +195,7 @@ The board's **BAT pads** aren't an alternative either — they're wired
 to an onboard Li-ion/LiPo charge controller that will try to charge
 whatever's connected there, and primary cells aren't rechargeable.
 
-### Short-circuit protection
+#### Short-circuit protection
 
 **[Bourns MF-R050](https://www.digikey.com/en/products/detail/bourns-inc/MF-R050/259965)
 (or TE/Raychem RXE050, dual-sourced equivalent), a resettable PTC
@@ -182,7 +234,7 @@ qualification current (guaranteed to trip within 4.0s at that point,
 worst case; real trip time at ~5A is faster, though not quantified
 beyond that spec figure).
 
-### Choosing an LDO
+#### Choosing an LDO
 
 Fixed 3.3V output, needs to accept the pack's full discharge range
 without exceeding its own input ceiling. 3 cells (not 2) puts the
@@ -191,7 +243,7 @@ input ceiling with room to spare — at no mAh cost, since a linear
 regulator draws roughly the same current from its input as it
 delivers at its output regardless of input voltage.
 
-#### MCP1700 (Microchip, TO-92) — installed
+##### MCP1700 (Microchip, TO-92) — installed
 
 [Microchip MCP1700](https://ww1.microchip.com/downloads/aemDocuments/documents/APID/ProductDocuments/DataSheets/MCP1700-Data-Sheet-20001826F.pdf),
 3.3V fixed output (`MCP1700-3302E/TO`, TO-92) — 1.6µA typical / 4µA
@@ -216,7 +268,7 @@ datasheet treats the input cap as required for stability here, not
 just good practice. Ceramic, tantalum, or aluminum electrolytic are
 all acceptable; 1µF X7R ceramics are what's installed.
 
-#### TPS7A0233 (TI) — alternative, lower quiescent current
+##### TPS7A0233 (TI) — alternative, lower quiescent current
 
 [TI TPS7A02](https://www.ti.com/lit/ds/symlink/tps7a02.pdf), 3.3V
 fixed output (suffix `33`), SOT23-5 — 25nA quiescent current even in
@@ -240,7 +292,7 @@ SOT23-5-to-DIP-6 adapter (0.1" pitch, drops into any protoboard).
 Needs a ~1µF ceramic (low-ESR, X7R/X5R/C0G — the datasheet is
 compensated for ceramic specifically) on both IN-GND and OUT-GND.
 
-### Battery disconnect
+#### Battery disconnect
 
 **JST-PH 2.0mm disconnect between the battery pack and the LDO's
 input**, always removed before connecting USB. The LDO means a
@@ -253,9 +305,36 @@ a scenario to rely on rather than avoid.
 battery voltage, so it stays flat for most of the pack's life. See
 "Future additions" below for the fix.
 
-## Future additions
+### Enclosure and cable routing
 
-### Battery voltage monitoring
+- IP67 ABS junction box, ~125 x 75 x 75mm, all penetrations on the
+  bottom face: SMA bulkhead and a PG7 cable gland for the sensor lead.
+- Antenna chain: Wio-SX1262's onboard U.FL connector →
+  [U.FL-to-SMA-bulkhead pigtail](https://www.digikey.com/en/products/detail/rf-solutions/CBA-UFLSMA-1/5845754) →
+  enclosure's bottom face →
+  [915MHz SMA whip antenna](https://www.digikey.com/en/products/detail/nearson-inc/S463AM-915/4571855),
+  pointing straight down (keeps the connector shielded from pooling
+  water, radiation pattern horizontal). The antenna has no stated
+  weatherproof rating of its own; pointing down and relying on the
+  bulkhead's O-ring is the mitigation.
+- 22/2 white UV-rated cable to the reed switch, joined with adhesive
+  solder-seal heat-shrink sleeves.
+- Reed switch: Interlogix 1085W-N or Honeywell 7945WH, fully potted,
+  1.5" gap — wide gap resists false triggers from gate rattle/wind.
+- Cable secured to the gate's lowest rail with GE Silicone II dabs
+  every 12-18", or outdoor acrylic tape — both removable without
+  damaging paint/powder coat.
+
+### Future additions
+
+**Caveat for both additions below: D6/D7 are UART0** (see "Shared radio
+stack"), which ESP-IDF's console claims regardless of `CDCOnBoot`, and
+which tx's production build also uses for FTDI serial monitoring. The
+same claim kept rx's beacon from working on D6. Putting I2C on these
+pins is unverified and probably conflicts; revisit the pin choice
+before building either one.
+
+#### Battery voltage monitoring
 
 Not yet wired into firmware. The ESP32-C6's own ADC can't be used for
 this: of its three header-exposed ADC1 pins (`A0`/`A1`/`A2` =
@@ -295,7 +374,7 @@ listing you buy from. [Adafruit #1085](https://www.adafruit.com/product/1085)
 is the documented, slower-shipping fallback if that can't be
 confirmed.
 
-### DS3231 RTC
+#### DS3231 RTC
 
 Opportunistic addition on D6/D7 (I2C), lower priority than everything
 else here — receiver receipt time is probably close enough for door
@@ -306,27 +385,7 @@ include an onboard CR2032 trickle-charge circuit and power LED that
 would eat into the sleep budget. Use a bare DS3231(M) directly, or a
 breakout confirmed to have the charge resistor and LED removed.
 
-## Enclosure and cable routing
-
-- IP67 ABS junction box, ~125 x 75 x 75mm, all penetrations on the
-  bottom face: SMA bulkhead and a PG7 cable gland for the sensor lead.
-- Antenna chain: Wio-SX1262's onboard U.FL connector →
-  [U.FL-to-SMA-bulkhead pigtail](https://www.digikey.com/en/products/detail/rf-solutions/CBA-UFLSMA-1/5845754) →
-  enclosure's bottom face →
-  [915MHz SMA whip antenna](https://www.digikey.com/en/products/detail/nearson-inc/S463AM-915/4571855),
-  pointing straight down (keeps the connector shielded from pooling
-  water, radiation pattern horizontal). The antenna has no stated
-  weatherproof rating of its own; pointing down and relying on the
-  bulkhead's O-ring is the mitigation.
-- 22/2 white UV-rated cable to the reed switch, joined with adhesive
-  solder-seal heat-shrink sleeves.
-- Reed switch: Interlogix 1085W-N or Honeywell 7945WH, fully potted,
-  1.5" gap — wide gap resists false triggers from gate rattle/wind.
-- Cable secured to the gate's lowest rail with GE Silicone II dabs
-  every 12-18", or outdoor acrylic tape — both removable without
-  damaging paint/powder coat.
-
-## Bill of materials
+### Bill of materials
 
 | Part | Qty | Notes |
 |---|---|---|
@@ -355,3 +414,202 @@ breakout confirmed to have the charge resistor and LED removed.
 | 4.7MΩ resistor | 1 | **future addition** — raw-battery divider, top half |
 | 2.2MΩ resistor | 1 | **future addition** — raw-battery divider, bottom half |
 | DS3231(M) RTC, bare chip or de-modded breakout | 1 | **future addition**, optional |
+
+## Receiver
+
+Indoor node: USB-powered, always on, on WiFi. Its only peripheral is a
+held-open warning beacon. The radio stack is the original stacked
+protoboard build. **The beacon's own protoboard is laid out and
+reviewed but not yet soldered.** The circuit is confirmed working on a
+breadboard.
+
+### Pin table
+
+All 14 XIAO header pins, one source of truth for rx:
+
+| XIAO pin | GPIO | Use |
+|---|---|---|
+| D0 | GPIO0 | **Beacon switch** — drives the MOSFET gate (see "Held-open beacon" below) |
+| D1 | GPIO1 | LoRa DIO1 |
+| D2 | GPIO2 | LoRa RST |
+| D3 | GPIO21 | LoRa BUSY |
+| D4 | GPIO22 | LoRa NSS |
+| D5 | GPIO23 | LoRa RF_SW |
+| D6 | GPIO16 | unused — UART0 TX, not usable as GPIO (see "Shared radio stack") |
+| D7 | GPIO17 | unused — UART0 RX, same |
+| D8 | GPIO19 | LoRa SCK |
+| D9 | GPIO20 | LoRa MISO |
+| D10 | GPIO18 | LoRa MOSI |
+| 3V3 | — | unused externally |
+| GND | — | beacon circuit GND (MOSFET source, gate pull-down) |
+| VBUS/5V | — | beacon +5V (USB-C power passes straight through) |
+
+### Mounting the stack
+
+Stacked XIAO + Wio-SX1262 on its own protoboard. Unlike tx, **D0 isn't
+bypassed around the HAT**: rx is mains-powered and never sleeps, so
+the HAT button's µA-scale pull-up current doesn't matter. Because rx
+*drives* D0, there's a different hazard: **don't press the HAT's
+button.** While the GPIO drives HIGH, pressing it shorts the output to
+GND. The button does nothing in this design. Tape over it, or snip it
+the way tx's "Bypassing the HAT on D0" does. Driving LOW against `R2`
+is only a ~330µA sink load, which is fine.
+
+### Held-open beacon
+
+A small rotating beacon light, on while the gate is reported held open
+(firmware: `beacon_should_be_on()` in `rx/rx.ino`).
+
+#### Circuit
+
+Low-side switch: the GPIO can't drive the beacon's 5V/current directly,
+so it switches a MOSFET in the beacon's **ground** return — easy to
+drive from a 3.3V pin, and the GPIO never sees the beacon's own voltage.
+
+```
+VBUS (5V) ──────────────────────────────────┬── beacon +5V
+                                              │
+                                         [beacon]
+                                              │
+                                         beacon GND ── MOSFET drain
+                                                         │
+GPIO D0 ──[220Ω]── MOSFET gate                     MOSFET source ── GND
+                       │
+                     [10kΩ]
+                       │
+                      GND
+```
+
+- **VBUS** for power — the XIAO's raw USB 5V pass-through. The beacon
+  draws ~20mA avg / ~25mA peak, well within a USB adapter's budget.
+- **10kΩ pull-down** on the gate keeps the beacon off during the brief
+  window after reset before `pinMode()`/`digitalWrite()` run.
+- **No flyback diode** — the beacon is LED-only, no inductive load (see
+  "Measured" below).
+- **Third wire (mode-select)** left disconnected: floating gives the
+  default rotating pattern, which is what this design wants. See
+  "Future additions" for driving it instead.
+
+**Alternative to the MOSFET**: a 2N2222A/PN2222A (TO-92 NPN), with the
+220Ω gate resistor swapped for a ~470Ω base resistor — fine for a load
+this size, and maybe more likely to be on hand. 470Ω leaves comfortable
+margin at a conservative hFE; 2.2-4.7kΩ would work too.
+
+#### Measured
+
+Measured with a Nordic PPK2 (`/var/tmp/beacon_current.png`, a brief
+pulse and a multi-second run — same pattern):
+
+- **~20mA average, ~25mA peak, no inrush.** A ~250ms ~7mA trough at
+  turn-on (driver IC power-on sequencing), then a step-like waveform with
+  no ringing or decay — an LED ring strobed to fake rotation, not a
+  motor. Visually confirmed LED-only too.
+- So: no flyback diode needed, and no VBUS headroom concern.
+- The beacon's factory connector is a standard 1x3 2.54mm DuPont-style
+  female header.
+
+#### Protoboard layout (reviewed, not yet soldered)
+
+A small standalone board, separate from the radio stack's protoboard.
+1"x1", 9x9-hole, pads grouped in sets of 3 per row (each row splits
+into three independent 3-hole islands: columns A-C, D-F, G-I — no
+bussing across groups or between rows), with a mounting hole knocking
+out 4 pads (I4, H5, I5, I6).
+
+Two vertical 1x3 headers: column A (XIAO side: A1 VBUS, A2 GND, A3 D0)
+and column I (beacon side: I1 BEACON_PWM — left floating, I2 BEACON_5V,
+I3 BEACON_GND). MOSFET standing on its 3 legs down column E rows 2-4
+(E2 Source, E3 Drain, E4 Gate, printed face toward column I/east).
+**Dry-fit the MOSFET against the datasheet pinout before soldering** —
+the orientation was worked out on paper, not with the part in hand.
+
+- `C2` (GND island) → `D2` (Source island): direct jumper.
+- `B2` (GND island) → 10kΩ → `D4` (Gate island): pulldown. D4 rather
+  than F4 keeps the lead inside columns B-D, clear of the Drain leg at
+  E3.
+- `B3` (D0 island) → 220Ω → `F4` (Gate island): gate series resistor,
+  approaching from the opposite side of D4's lead.
+- `F3` (Drain island) → `H3` (BEACON_GND island): jumper.
+- `B1` (VBUS island) → `H2` (BEACON_5V island): jumper.
+
+Everything fits in rows 1-4; no routing via row 5 (which is missing 2
+of its 3 right-side holes to the mounting-hole knockout anyway).
+
+**The header's beacon "GND" position goes to the MOSFET drain, not the
+board's GND rail** — that's the switched node. Wired straight to GND,
+the beacon would be permanently on. Also match the header's +5V/GND
+positions to the beacon pins confirmed on the bench: DuPont pin order
+isn't standardized across RC-accessory vendors.
+
+**Remaining step:** solder this board, dry-fitting the MOSFET first,
+then re-confirm the beacon switches on the permanent build.
+
+### Power
+
+USB-C into the XIAO. VBUS (the raw 5V pass-through)
+also feeds the beacon, at ~25mA peak.
+
+### Future additions
+
+#### Beacon mode-select from software
+
+Not needed (floating gives the default pattern) and not planned, but
+easy if ever wanted.
+
+**Pin: not settled.** D6/D7 are UART0 (see "Shared radio stack") and D0
+is taken by the on/off switch, so there's no obviously free pin left on
+the 14-pin header. Needs fresh investigation if pursued; the approach
+below still holds.
+
+**Wiring**: beacon signal wire straight to the GPIO — it's a logic-level
+input on the beacon's driver board, no transistor needed. A 220-470Ω
+series resistor is cheap insurance.
+
+**Signal**: standard RC servo/ESC-style PWM — 50Hz (20ms period), a
+1000-2000µs pulse width selecting the mode. There's no published
+mapping for this unit, so build a mode table empirically: hold each
+pulse width for a second or two across that range in ~50-100µs steps
+and note what pattern plays.
+
+**Firmware**: the ESP32-C6's LEDC peripheral generates this in
+hardware once configured:
+
+```cpp
+#define BEACON_MODE_PIN      /* TBD — see "Pin: not settled" above */
+#define BEACON_PWM_FREQ_HZ   50
+#define BEACON_PWM_BITS      16     // plenty of duty-cycle resolution
+
+void setup() {
+  ledcAttach(BEACON_MODE_PIN, BEACON_PWM_FREQ_HZ, BEACON_PWM_BITS);
+  set_beacon_mode_us(1500);  // pick a starting pulse width once mapped
+}
+
+// pulse_us: the pulse width (microseconds) to hold, out of a 20ms
+// (50Hz) period — set once and left running, not called every loop().
+void set_beacon_mode_us(uint32_t pulse_us) {
+  const uint32_t period_us = 1000000UL / BEACON_PWM_FREQ_HZ;
+  const uint32_t max_duty = (1UL << BEACON_PWM_BITS) - 1;
+  uint32_t duty = (uint64_t)pulse_us * max_duty / period_us;
+  ledcWrite(BEACON_MODE_PIN, duty);
+}
+```
+
+(`ledcAttach`/`ledcWrite` is the Arduino-ESP32 core 3.x API — older
+examples use `ledcSetup`/`ledcAttachPin`, which this core no longer
+has.) This is independent of the D0 power switch; the PWM can keep
+running while the beacon is unpowered.
+
+### Bill of materials
+
+The radio stack's own protoboard and antenna aren't recorded here yet.
+
+| Part | Qty | Notes |
+|---|---|---|
+| XIAO ESP32-C6 | 1 | |
+| Wio-SX1262 (for XIAO ESP32S3, through-hole variant) | 1 | |
+| RC-style LED rotating beacon, 5V, 3-wire (+5V / GND / PWM mode-select) | 1 | ~20-25mA — see "Measured" |
+| 1"x1" 9x9-hole protoboard, 3-pad islands per row | 1 | beacon board — see "Protoboard layout" |
+| IRLZ44N (TO-220, logic-level N-channel MOSFET) | 1 | Vgs(th) ~1-2V, switches well under 3.3V drive — overkill for ~20-25mA, but standard, cheap, always in stock. 2N2222A/PN2222A is an alternative (see "Circuit") |
+| 220Ω resistor | 1 | MOSFET gate series resistor |
+| 10kΩ resistor | 1 | gate pull-down |
+| 1x3 0.1"/2.54mm male pin header (THT, straight or right-angle per mounting) | 2 | one mates with the beacon's factory connector, one to the XIAO side. Populate all 3 beacon-side positions even though only 2 are wired, so the connector seats fully and can't be mis-plugged by one position. |

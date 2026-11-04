@@ -19,10 +19,10 @@
 #define WIFI_TIMEOUT_MS 10000
 
 // Held-open warning beacon: drives a low-side MOSFET switching the
-// beacon's 5V (circuit in RX_BEACON_WIRING.md). D0, not D6/D7: those are
+// beacon's 5V (circuit in WIRING.md's Receiver section). D0, not D6/D7: those are
 // UART0, which this core's prebuilt ESP-IDF console claims regardless of
 // CDCOnBoot. D0 shares a net with the Wio HAT's onboard button — don't
-// press it while this drives HIGH (see RX_BEACON_WIRING.md).
+// press it while this drives HIGH (see WIRING.md).
 #define BEACON_PIN 0  // D0/GPIO0
 
 // Retries (after the first try) for one HTTP GET on a transient failure —
