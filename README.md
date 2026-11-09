@@ -1,84 +1,66 @@
-# loragate
+# loragate - outdoor LoRA radio gate sensor
 
-A battery-powered door/gate sensor that reports open, close, and
+A battery-powered outdoor door/gate sensor that reports open, close, and
 "still open" events over LoRa to an always-on receiver, which forwards
 them to a WiFi-connected monitoring server.
 
 ## Requirements
 
-- Multi-year battery life on primary AA cells, outdoors, unattended —
-  no solar, no mains run to the gate.
-- Never silently miss a door state change, even across a reset.
-- Usable range through walls/trees between the gate and the house
-  (no WiFi or cellular at the gate).
-- No recurring cost (no cellular plan, no cloud radio service).
-- Some visibility into the transmitter's own health (is it still
-  alive, did it reset unexpectedly) without needing a visit to check.
+- Report door open and close events at medium range, through walls and trees.
+- Never miss a door state change, even across resets or transient failures.
+- Multi-year battery life on primary lithium cells in a warm outdoor climate.
 
 ## Implementation pieces
 
-- **`tx/`** — the outdoor transmitter: XIAO ESP32-C6 + Wio-SX1262,
+- **[`tx`](tx/)** — outdoor transmitter: XIAO ESP32-C6 + Wio-SX1262,
   reed switch, 3x AA lithium cells. Deep-sleeps between events.
-- **`rx/`** — the indoor receiver: same radio hardware, USB-powered,
-  always on, WiFi-connected. Acks `tx`, forwards events to a
-  monitoring server over HTTP, and lights a local held-open beacon.
-- **`test/`** — host-side tests (no ESP32 toolchain needed) for the
+- **[`rx`](rx/)** — indoor receiver: same radio hardware, but USB-powered,
+  always on, and WiFi connected. Listens for and acks transmissions from `tx`,
+  forwards events to a monitoring server over HTTP, and lights an LED beacon.
+- **[`test/`](test/)** — host-side tests (no ESP32 toolchain needed) for the
   parts of `tx`/`rx` written to be testable without hardware: the wire
   format, `tx`'s wake-decision logic, and `rx`'s retry-dedup logic.
 
 ## Why these choices
 
-**LoRa, not WiFi or cellular, for the transmitter.** WiFi's join/auth
-cost alone is worse than LoRa's entire transmit burst, and there's no
-cellular plan to pay for recurring. LoRa trades bandwidth (a few bytes
-a message) for exactly what this needs: long range at near-zero duty
-cycle, license-free. The receiver *is* WiFi-connected, but it's
-mains-powered — it absorbs that cost so the battery-powered side
-doesn't have to.
+**LoRa for the transmitter.** WiFi and BLE are too expensive power wise.
+Z-wave or Zigbee was empirically proven to not be able to transmit through
+walls and low-E window coatings in my particular home setting. LoRA radio
+has super low power requirements and has excellent range for my use case.
 
-**XIAO ESP32-C6, deep-sleep by default, event-driven wake.** Polling
-the reed switch on a timer would mean staying awake far more than the
-door actually changes state. Instead, `tx` deep-sleeps and wakes only
-on a reed-switch edge or a backstop RTC timer (see "Software" below) —
-the C6's RTC domain is what makes both of those possible as a true
-low-power wake source, and `RTC_NOINIT_ATTR` memory is what lets a few
-bytes of state (sequence counter, last-reported door state) survive
-both sleep and an unexpected restart without re-deriving them from
-scratch every wake.
+**XIAO ESP32-C6, deep-sleep by default, event-driven wake.** The outdoor
+unit is battery powered, with the goal of 2+ years of battery life. The `tx`
+unit deep-sleeps and wakes only on a reed-switch edge change or a backstop
+RTC timer (see "Software" below), using the C6's RTC domain and `RTC_NOINIT_ATTR` memory to store state between wakes.
 
-**Primary AA lithium (Energizer L91), not rechargeable Li-ion, through
-an LDO.** A sealed outdoor enclosure in direct sun runs hotter than
-ambient, and that's exactly where Li-ion/LiPo capacity fade and
-pouch-cell failure modes get worse — the alarm industry ships
-door/window sensors on primary lithium for the same reason. The
-XIAO's `3V3` pin is wired straight to the chip's core supply with no
-protection, and a fresh pack can sit close to the chip's own voltage
-ceiling with no margin — an LDO (plus a PTC fuse ahead of it) fixes
-both the regulation and the short-circuit exposure in one part. See
-WIRING.md's Transmitter "Power" for the specific part and the alternative
-considered.
+**Primary AA lithium cells through an LDO.** The outdoor enclosure is sealed
+in a northern Californian climate which can get warm (up to 90°F ambient),
+so Li-ion/LiPo rechargeable cells were rejected for safety reasons (spicy
+battery). Consumer-available primary AA lithium cells (Energizer L91 or
+equivalent) are rated up to 140°F and have inbuilt protections. An LDO with
+low quiescent power draw and a PTC fuse protect against voltage fluctuation
+over time and short circuits, respectively. See the Transmitter "Power"
+section of [`WIRING.md`](WIRING.md) for details and alternatives considered.
 
-**Simple ack/retry over the radio link, not a heavier protocol.** Each
-event is one small packet (type + sequence number + retry count);
-`tx` retries with backoff until `rx` acks it or it gives up. That's
-enough reliability for "a handful of events a day, on a link that's
-usually clean," without the complexity of a synchronized/meshed
-protocol this traffic pattern doesn't need.
+**Simple ack/retry over the radio link.** For maximum simplicity, this is a
+point to point LoRA protocol, where each event is one small packet (type +
+sequence number + retry count); `tx` retries with backoff until `rx` acks it
+or it gives up. The radio link is empirically clean so we do not need the
+complexity of a meshed protocol.
 
-**The wake/sleep decision logic is pure C++, separate from the
-Arduino/radio code.** `tx/door_wake_logic.h` decides *what a wake
-means and should do* with no Arduino, radio, or Serial dependency;
-`tx/tx.ino` is just the I/O shell that reads the pin and carries out
-the decision. That split is what lets `test/test_tx_wake_logic.cpp`
-exercise the actual decision rules — including regression cases for
-real bugs caught along the way (see "History" below) — with a plain
-C++ compiler, no hardware required.
+**Wake/sleep decision logic is pure C++, separate from Arduino/radio code.**
+`tx/door_wake_logic.h` decides what a wake means and what should do with no
+Arduino, radio, or Serial dependencies. `tx/tx.ino` is just the I/O shell that
+reads the pin and carries out the decision. That split lets us run unit tests
+in `test/test_tx_wake_logic.cpp` to exercise the actual decision rules,
+including regression cases for real bugs caught along the way (see "History"
+below) with a plain C++ compiler, no hardware required.
 
 ### Power budget
 
-Deep-sleep current, measured live on the built transmitter with a
-Nordic PPK2 (see "History" below for how the first measurement — 1.5mA,
-not microamps — got root-caused):
+The overall goal for the battery-powered transmitter is 2+ years between
+battery changes. With the chosen components, the deep-sleep current was
+measured on a Nordic PPK2 is as follows:
 
 | Source | Current |
 |---|---|
@@ -86,26 +68,24 @@ not microamps — got root-caused):
 | Deep sleep, door open | **18.5µA** |
 | Active transmit (~120ms burst, +22dBm) | **~125mA** |
 
-Budgeting conservatively for ~54 radio events/day (20 door
-transitions + an hourly heartbeat floor + occasional held-open
-checks — see "Software" below) against ~2,100mAh realistically
-extractable from a 3x AA L91 pack:
+Budgeting conservatively for ~54 radio events/day (20 door transitions, an hourly heartbeat, and occasional held-open checks, see "Software" below)
+against ~2,100mAh realistically extractable from a 3x AA L91 pack:
 
 ```
-sleep:  0.0219mA * 24h                    ≈ 0.526 mAh/day
-active: 54 * 0.120s * 125mA / 3600        ≈ 0.225 mAh/day
-total                                     ≈ 0.751 mAh/day
-2,100 mAh / (0.751 mAh/day * 365)         ≈ 7.7 years
+sleep:  0.0219mA * 24h             ≈ 0.526 mAh/day
+active: 54 * 0.120s * 125mA / 3600 ≈ 0.225 mAh/day
+total                              ≈ 0.751 mAh/day
+2,100 mAh / (0.751 mAh/day * 365)  ≈ 7.7 years
 ```
 
-Comfortably past the "2+ years would be satisfying" bar, with enough
-margin to absorb temperature, pack-tolerance, and retry-rate
-uncertainty the measurement doesn't cover. Not modeled: a worst case
-of constant ack-retries would cost more than the single-burst-per-event
-assumption above — live field logs show this is rare in practice, but
-it's not measured.
+In real life, temperature, battery degradation, and other factors will likely
+bring the battery life down from the calculated figure, but we should be
+comfortably over the "2+ years" bar.
 
 ### History
+
+This and other History sections are AI authored, and contain the lessons
+learned during iteration, with the hope of not repeating any false starts.
 
 - The project's first draft (an AI-authored plan, not hardware-checked)
   got real things wrong: a reed-switch pin that collided with the
